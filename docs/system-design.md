@@ -473,6 +473,10 @@ back to tab or workspace focus.
 
 Before connecting, `HERDR_SOCKET_PATH` must be absolute, resolve to an existing
 Unix socket rather than a regular file, and be owned by the effective user.
+After connecting and before sending the request, the client authenticates the
+connected peer with kernel credentials: `SO_PEERCRED` on Linux and `getpeereid`
+on macOS. A peer UID that is not the effective user, or credentials that cannot
+be read, is a transport error.
 
 The `pane.focus` action is expected to select the target workspace, tab, and
 pane in one server operation. Failure never falls back to a less precise tab
@@ -562,7 +566,8 @@ Herdr is the only mode that unconditionally uses ordinary directory change.
 - Only the Herdr-injected binary is executed.
 - The binary's final target is validated as a regular executable file.
 - The direct-focus socket is absolute, local, a Unix socket, and owned by the
-  effective user.
+  effective user. After connect, the connected peer UID is authenticated as the
+  effective user using kernel credentials.
 - JSON inputs and outputs are typed and size-bounded.
 - Unknown response fields are tolerated, but missing or malformed required
   fields fail closed.
@@ -610,7 +615,7 @@ A fake executable will verify:
 
 A temporary fake Unix socket server will verify:
 
-- path/type/owner validation;
+- path/type/owner validation and same-user peer credentials after connect;
 - the exact `pane.focus` request shape;
 - unique request IDs and response-ID matching;
 - success, Herdr errors, malformed JSON, truncation, timeout, and
