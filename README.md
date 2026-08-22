@@ -112,6 +112,15 @@ workspace's focused tab, then snapshot list order.
 | `/repo/src`       | `/repo/docs` | Focus an idle pane at `/repo/docs`, or create a tab                 |
 | `/repo/src`       | `/other`     | Create and focus a workspace at `/other`                            |
 
+## Configuration
+
+> [!WARNING]
+> `hcd` is opinionated. This version does not provide behavior customization.
+> Customization may be added in a future version.
+
+There are no flags, environment variables, or config files that change how
+`hcd` chooses an action. The decision tree above is the complete behavior.
+
 ## Development
 
 ```text
