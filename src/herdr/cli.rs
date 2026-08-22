@@ -50,6 +50,13 @@ pub(crate) fn run(
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
     apply_herdr_env(&mut command, context);
+    // Put the child in its own process group so timeout/interrupt can reap
+    // descendants that still hold stdout/stderr (for example `sh` + `sleep`).
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
 
     let mut child = command
         .spawn()
@@ -140,8 +147,27 @@ fn read_bounded(reader: impl Read, max_bytes: usize) -> io::Result<BoundedRead> 
 }
 
 fn terminate(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let pid = i32::try_from(child.id()).unwrap_or(0);
+        if pid > 0 {
+            // SAFETY: `run` spawns with `process_group(0)`, so the child's PGID
+            // equals its PID. A negative PID targets that whole group.
+            unsafe {
+                kill(-pid, SIGKILL);
+            }
+        }
+    }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(unix)]
+const SIGKILL: i32 = 9;
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
 }
 
 fn drain(
@@ -263,17 +289,47 @@ mod tests {
     #[test]
     fn timeout_terminates_and_reaps_the_child() {
         let _cli = lock_cli();
+        // `exec` replaces the wrapper shell so the timed-out PID is `sleep`
+        // itself. Process-group teardown still covers a non-exec wrapper.
+        let (_dir, bin) = fake_script("exec sleep 5\n");
+        let context = context_for(&bin);
+        let started = Instant::now();
+        let err = run(
+            &context,
+            &["api", "snapshot"],
+            Duration::from_millis(200),
+            || false,
+        )
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "timeout should kill the child promptly, elapsed {:?}",
+            started.elapsed()
+        );
+        match err {
+            RunError::Failed(error) => assert_eq!(error.kind(), ErrorKind::HerdrTimeout),
+            RunError::Interrupted => panic!("expected timeout"),
+        }
+    }
+
+    #[test]
+    fn timeout_kills_a_wrapper_shell_and_its_sleep_child() {
+        let _cli = lock_cli();
         let (_dir, bin) = fake_script("sleep 5\nprintf '{}\\n'\n");
         let context = context_for(&bin);
         let started = Instant::now();
         let err = run(
             &context,
             &["api", "snapshot"],
-            Duration::from_millis(150),
+            Duration::from_millis(200),
             || false,
         )
         .unwrap_err();
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "killing the wrapper must also reap sleep, elapsed {:?}",
+            started.elapsed()
+        );
         match err {
             RunError::Failed(error) => assert_eq!(error.kind(), ErrorKind::HerdrTimeout),
             RunError::Interrupted => panic!("expected timeout"),
@@ -283,7 +339,7 @@ mod tests {
     #[test]
     fn interruption_terminates_the_child() {
         let _cli = lock_cli();
-        let (_dir, bin) = fake_script("sleep 5\nprintf '{}\\n'\n");
+        let (_dir, bin) = fake_script("exec sleep 5\n");
         let context = context_for(&bin);
         let stop = AtomicBool::new(true);
         let err = run(&context, &["api", "snapshot"], READ_TIMEOUT, || {
