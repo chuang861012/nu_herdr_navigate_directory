@@ -1,18 +1,14 @@
 # nu_herdr_cd
 
-`nu_herdr_cd` is a Rust plugin for Nushell. It provides `hcd`, a
-directory-navigation command that cooperates with Herdr workspaces, tabs, and
-panes.
+Herdr-aware `cd` for Nushell.
 
 ```nu
 hcd <path: filepath> -> nothing
 ```
 
-Outside Herdr, `hcd` updates the caller's `$env.PWD` to the canonical target.
-Inside Herdr, it reuses an idle pane at the exact target when possible, changes
-the current pane's directory only for downward navigation, and otherwise creates
-or focuses a tab or workspace. Successful calls are silent and return
-`nothing`.
+Point `hcd` at a directory and it picks the least disruptive move: stay in this
+pane when you go deeper, jump to an idle pane already there, or open a new tab
+or workspace. Success is silent.
 
 See [the system design](docs/system-design.md) for architecture, constraints,
 and verification.
