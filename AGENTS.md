@@ -56,3 +56,10 @@
 
 - Before implementation, run `git branch --show-current`. If it reports `main`, create or switch to a focused feature branch before changing code, tests, configuration, or migrations. Never commit implementation work directly to `main`.
 - History uses Conventional Commit subjects such as `docs: add system design`. Keep commits focused with an imperative `<type>: <summary>`. PRs should describe scope, list verification commands, and include screenshots for UI changes. Do not edit `docs/archived/` or other archived pre-release progress files.
+
+## Changelog
+
+For any change that may affect users, releases, compatibility, APIs, CLI behavior,
+configuration, or security, read and follow [the changelog policy](docs/changelog.md).
+
+Update `CHANGELOG.md` when required by that policy.
