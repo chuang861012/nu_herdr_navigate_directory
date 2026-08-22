@@ -27,10 +27,10 @@ ordinary directory change.
 ## Install
 
 ```text
-cargo install --git https://github.com/chuang861012/nu_herdr_cd --tag 0.1.0 nu_plugin_herdr_cd
+cargo install --git https://github.com/chuang861012/nu_herdr_cd --tag 0.1.1 nu_plugin_herdr_cd
 ```
 
-Omit `--tag 0.1.0` to install the default branch instead of the 0.1.0 release.
+Omit `--tag 0.1.1` to install the default branch instead of the 0.1.1 release.
 
 In Nushell, with `~/.cargo/bin` on `PATH`:
 

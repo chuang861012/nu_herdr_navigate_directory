@@ -4,14 +4,15 @@ Status: approved design baseline
 
 Last updated: 2026-08-23
 
-Released version: 0.1.0
+Released version: 0.1.1
 
-Implementation status: Phases 1–6 are complete. Version 0.1.0 is released as a
-GitHub source tag. The source tree includes the complete `hcd` command, local
-quality gates, a non-deploying Linux/macOS GitHub Actions workflow, and
-source-install documentation. Publishing to crates.io, Homebrew, or prebuilt
-binaries remains a separate future decision. The completed 0.1.0 staged
-delivery record is archived in
+Implementation status: Phases 1–6 are complete. Version 0.1.1 is the current
+GitHub source release. Version 0.1.0 remains available as a prior source tag.
+The source tree includes the complete `hcd` command, local quality gates, a
+non-deploying Linux/macOS GitHub Actions workflow, and source-install
+documentation. Publishing to crates.io, Homebrew, or prebuilt binaries remains
+a separate future decision. The completed 0.1.0 staged delivery record is
+archived in
 [Implementation Phases](archived/0.1.0/README.md). That archive is a historical
 record and must not be edited. This document remains the authoritative
 requirements and architecture specification.
@@ -70,7 +71,7 @@ The initial version does not provide:
 The crate uses Rust edition 2024 and a declared `rust-version`. As an
 application binary, it tracks `Cargo.lock`. Exact `nu-plugin` and
 `nu-protocol` versions are recorded in the package manifests; they must use
-the same minor version. Version 0.1.0 targets Nushell plugin SDK 0.115.
+the same minor version. The crate targets Nushell plugin SDK 0.115.
 
 Nushell plugin transport uses `nu_plugin::serve_plugin` with
 `MsgPackSerializer`.
@@ -544,8 +545,7 @@ Internal failures use these categories before conversion to Nushell
 | `herdr_protocol` | JSON or response semantics are invalid. |
 | `herdr_action` | Herdr rejected a valid requested action. |
 
-These names are internal in 0.1.0 and are not a stable machine-readable public
-API.
+These names are internal and are not a stable machine-readable public API.
 
 Path errors label the path argument span. Context and Herdr errors label the
 command head span. Errors may include the operation, sanitized Herdr error

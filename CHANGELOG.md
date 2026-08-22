@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-23
+
 ### Security
 
 - Authenticate the connected Herdr Unix-socket peer as the current user before
@@ -25,5 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and returns nothing. Requires Nushell 0.115 and, inside a Herdr session,
   Herdr 0.8.2 or later.
 
-[Unreleased]: https://github.com/chuang861012/nu_herdr_cd/compare/0.1.0...HEAD
+[Unreleased]: https://github.com/chuang861012/nu_herdr_cd/compare/0.1.1...HEAD
+[0.1.1]: https://github.com/chuang861012/nu_herdr_cd/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/chuang861012/nu_herdr_cd/releases/tag/0.1.0

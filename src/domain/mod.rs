@@ -16,8 +16,7 @@ pub(crate) use types::{
 
 /// Internal failure category before conversion to a Nushell `LabeledError`.
 ///
-/// These names are internal in 0.1.0 and are not a stable machine-readable
-/// public API.
+/// These names are internal and are not a stable machine-readable public API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ErrorKind {
     InvalidPath,
