@@ -6,15 +6,15 @@ Last updated: 2026-08-23
 
 Planned initial version: 0.1.0
 
-Implementation status: Phases 1–5 agent work is complete. Phase 5 wires the
-complete `hcd` inspect-decide-act loop, including bounded recomputation, the
+Implementation status: Phases 1–5 are complete. Phase 5 wires the complete
+`hcd` inspect-decide-act loop, including bounded recomputation, the
 10-second total deadline, interruption, structured errors, and fake
 transport tests. Successful calls return `nothing`; only `ChangeDirectory`
-updates the caller's `$env.PWD`. Phase 5 still requires user confirmation.
-Phase 6 has not started. The staged delivery plan is defined in
-[Implementation Phases](phases/README.md). This document remains the
-authoritative requirements and architecture specification; phase files define
-execution order and acceptance gates but must not override this document.
+updates the caller's `$env.PWD`. Phase 6 has not started. The staged
+delivery plan is defined in [Implementation Phases](phases/README.md). This
+document remains the authoritative requirements and architecture
+specification; phase files define execution order and acceptance gates but
+must not override this document.
 
 ## 1. Overview
 
