@@ -660,8 +660,12 @@ The supported installation paths are source-based:
 ```text
 cargo install --path .
 cargo install --git <repository-url> --tag <version> nu_plugin_herdr_cd
-plugin add nu_plugin_herdr_cd
+plugin add ~/.cargo/bin/nu_plugin_herdr_cd
 ```
+
+`plugin add` searches the current directory and `NU_PLUGIN_DIRS`. It does not
+search `PATH`. If Cargo's bin directory is not `~/.cargo/bin`, pass that path
+instead, or add the directory to `NU_PLUGIN_DIRS` and register by filename.
 
 A GitHub source release tags a revision for `--tag` installs. Publishing to
 crates.io, packaging for Homebrew, and producing signed prebuilt release
