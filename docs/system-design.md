@@ -6,10 +6,12 @@ Last updated: 2026-08-22
 
 Planned initial version: 0.1.0
 
-Implementation status: not started. The staged delivery plan is defined in
-[Implementation Phases](phases/README.md). This document remains the
-authoritative requirements and architecture specification; phase files define
-execution order and acceptance gates but must not override this document.
+Implementation status: Phase 1 plugin foundation is implemented locally and
+awaits user confirmation. Later phases have not started. The staged delivery
+plan is defined in [Implementation Phases](phases/README.md). This document
+remains the authoritative requirements and architecture specification; phase
+files define execution order and acceptance gates but must not override this
+document.
 
 ## 1. Overview
 
@@ -62,10 +64,11 @@ The initial version will not provide:
 | Nushell plugin identity | `herdr_cd` |
 | Public command | `hcd` |
 
-The future crate will use Rust edition 2024 and a declared `rust-version`. As
-an application binary, it will track `Cargo.lock`. The `nu-plugin` and
-`nu-protocol` dependencies must use the same minor version and should target
-the latest stable Nushell plugin SDK available when implementation begins.
+The crate uses Rust edition 2024 and a declared `rust-version`. As an
+application binary, it tracks `Cargo.lock`. Exact `nu-plugin` and
+`nu-protocol` versions are recorded in the package manifests; they must use
+the same minor version and target the latest stable Nushell plugin SDK
+available when implementation begins.
 
 Nushell plugin transport will use `nu_plugin::serve_plugin` with
 `MsgPackSerializer`.

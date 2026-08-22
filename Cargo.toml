@@ -1,0 +1,16 @@
+[package]
+name = "nu_plugin_herdr_cd"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95.0"
+license = "MIT"
+description = "Nushell plugin that provides hcd, a Herdr-aware directory navigation command"
+readme = "README.md"
+authors = ["Henry Chuang"]
+repository = "https://github.com/chuang861012/nu_herdr_cd"
+keywords = ["nushell", "plugin", "herdr"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+nu-plugin = "0.115.0"
+nu-protocol = "0.115.0"
