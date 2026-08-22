@@ -126,10 +126,12 @@ pub(crate) fn run(
     })
 }
 
-/// Run blocking work on a helper thread so the caller can honor halt/deadline.
+/// Run read-only blocking work on a helper thread so the caller can honor halt.
 ///
 /// The helper is abandoned if halt becomes true before it finishes. The syscall
-/// may continue until the kernel returns; `hcd` itself does not wait.
+/// may continue until the kernel returns; `hcd` itself does not wait. Do not use
+/// this for caller mutations such as `$env.PWD`; an abandoned worker must not
+/// be able to complete a write after the command has already failed.
 pub(crate) fn run_bounded<T: Send + 'static>(
     halt: &dyn Fn() -> bool,
     work: impl FnOnce() -> T + Send + 'static,

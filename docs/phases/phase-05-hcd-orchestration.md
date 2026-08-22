@@ -48,8 +48,9 @@ errors, and behavior-level tests.
 - [x] [Agent] Never recompute more than once for one invocation.
 - [x] [Agent] Enforce the 10-second total deadline from command entry as a hard
   maximum, covering path and context I/O as well as Herdr work, in addition to
-  operation timeouts. Blocking lookups must not delay the timeout or
-  interruption past the deadline.
+  operation timeouts. Blocking read-only lookups must not delay the timeout or
+  interruption past the deadline. `$env.PWD` mutation is dispatched only after
+  a halt check and is never left running on an abandoned helper.
 - [x] [Agent] On Nushell interruption, terminate/reap a child or close a socket,
   skip remaining work, and return an interruption error.
 

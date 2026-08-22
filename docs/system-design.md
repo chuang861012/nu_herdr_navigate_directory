@@ -489,11 +489,15 @@ or workspace focus.
 
 The total deadline starts at command entry and is a hard maximum covering path
 resolution, Herdr context and binary validation, Herdr I/O, and the one
-allowed recomputation. Blocking caller-engine or filesystem lookups are
-waited on a helper thread so the command can return at the deadline or on
-interruption without waiting for the syscall to finish. A child process that
-exceeds its limit is terminated and reaped. A socket operation that exceeds
-its limit is closed.
+allowed recomputation. Blocking read-only caller-engine or filesystem lookups
+are waited on a helper thread so the command can return at the deadline or on
+interruption without waiting for the syscall to finish. Caller mutations such
+as `$env.PWD` are not dispatched on an abandonable helper: they run only after
+a halt check and are waited to completion, so a timed-out or interrupted
+invocation cannot change the caller's cwd later. If that mutation itself
+blocks, the invocation may exceed the total deadline in order to stay
+fail-closed. A child process that exceeds its limit is terminated and reaped.
+A socket operation that exceeds its limit is closed.
 
 The command observes `EngineInterface::signals()`. On interruption it
 terminates any live child, closes any socket, skips remaining waits and

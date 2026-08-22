@@ -155,17 +155,17 @@ fn apply_outcome(
     match outcome {
         Outcome::Silent => Ok(Value::nothing(head)),
         Outcome::ChangeDirectory { path } => {
-            let engine_worker = engine.clone();
-            let value = Value::string(path.as_str(), path_span);
-            match run_bounded(halt, move || engine_worker.add_env_var("PWD", value)) {
-                Ok(Ok(())) => Ok(Value::nothing(head)),
-                Ok(Err(error)) => Err(labeled_error(&error, path_span, head)),
-                Err(error) => Err(map_run_error_parts(
-                    map_halt(error, interrupted),
+            if halt() {
+                return Err(map_run_error_parts(
+                    map_halt(RunError::Interrupted, interrupted),
                     path_span,
                     head,
-                )),
+                ));
             }
+            engine
+                .add_env_var("PWD", Value::string(path.as_str(), path_span))
+                .map_err(|error| labeled_error(&error, path_span, head))?;
+            Ok(Value::nothing(head))
         }
     }
 }
@@ -327,6 +327,7 @@ mod tests {
         env: HashMap<String, Value>,
         interrupted: Arc<AtomicBool>,
         cwd_delay: Duration,
+        pwd_delay: Duration,
         env_writes: Arc<Mutex<Vec<(String, String)>>>,
         cwd_calls: Arc<AtomicUsize>,
     }
@@ -338,6 +339,7 @@ mod tests {
                 env: HashMap::new(),
                 interrupted: Arc::new(AtomicBool::new(false)),
                 cwd_delay: Duration::ZERO,
+                pwd_delay: Duration::ZERO,
                 env_writes: Arc::new(Mutex::new(Vec::new())),
                 cwd_calls: Arc::new(AtomicUsize::new(0)),
             }
@@ -370,6 +372,9 @@ mod tests {
         }
 
         fn add_env_var(&self, name: &str, value: Value) -> Result<(), Error> {
+            if !self.pwd_delay.is_zero() {
+                thread::sleep(self.pwd_delay);
+            }
             let rendered = match &value {
                 Value::String { val, .. } => val.clone(),
                 other => format!("{other:?}"),
@@ -490,6 +495,38 @@ mod tests {
             started.elapsed()
         );
         assert!(blocked.writes().is_empty());
+    }
+
+    #[test]
+    fn halted_change_directory_does_not_late_write_pwd() {
+        let cwd = std::env::temp_dir();
+        let cwd_str = cwd.to_str().expect("temp dir is UTF-8");
+        let path = CanonicalPath::directory(&cwd).unwrap();
+        let mut engine = FakeEngine::outside(cwd_str);
+        engine.pwd_delay = Duration::from_millis(80);
+
+        let started = Instant::now();
+        let error = apply_outcome(
+            &engine,
+            Outcome::ChangeDirectory { path },
+            Span::test_data(),
+            Span::test_data(),
+            &|| true,
+            &|| false,
+        )
+        .unwrap_err();
+        assert_eq!(error.code.as_deref(), Some("herdr_cd::herdr_timeout"));
+        assert!(
+            started.elapsed() < Duration::from_millis(40),
+            "PWD mutation must not be dispatched after halt, elapsed {:?}",
+            started.elapsed()
+        );
+        thread::sleep(Duration::from_millis(120));
+        assert!(
+            engine.writes().is_empty(),
+            "abandoned timeout must not complete a delayed PWD write, got {:?}",
+            engine.writes()
+        );
     }
 
     #[test]
