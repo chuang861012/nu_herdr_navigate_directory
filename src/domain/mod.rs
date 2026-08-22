@@ -77,6 +77,31 @@ impl Error {
         Self::new(ErrorKind::InvalidPath, message)
     }
 
+    pub(crate) fn invalid_herdr_context(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::InvalidHerdrContext, message)
+    }
+
+    pub(crate) fn incompatible_herdr(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::IncompatibleHerdr, message)
+    }
+
+    pub(crate) fn herdr_timeout(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::HerdrTimeout, message)
+    }
+
+    pub(crate) fn herdr_transport(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::HerdrTransport, message)
+    }
+
+    pub(crate) fn herdr_protocol(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::HerdrProtocol, message)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn herdr_action(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::HerdrAction, message)
+    }
+
     pub(crate) fn kind(&self) -> ErrorKind {
         self.kind
     }

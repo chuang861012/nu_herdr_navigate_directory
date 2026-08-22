@@ -1,9 +1,12 @@
 //! Nushell plugin identity, `hcd` signature, and command-boundary errors.
 
+use std::collections::BTreeMap;
+
 use nu_plugin::{EngineInterface, EvaluatedCall, Plugin, PluginCommand, SimplePluginCommand};
 use nu_protocol::{Category, LabeledError, Signature, Span, SyntaxShape, Type, Value};
 
-use crate::domain::ErrorKind;
+use crate::domain::{Error, ErrorKind};
+use crate::herdr::{EnvValue, HerdrMode, classify_herdr_env, inside_context};
 
 const COMMAND_NAME: &str = "hcd";
 
@@ -56,6 +59,62 @@ impl SimplePluginCommand for Hcd {
     }
 }
 
+/// Read Herdr mode from the caller's environment, never from the plugin process.
+#[allow(dead_code)]
+fn read_herdr_mode(engine: &EngineInterface) -> Result<HerdrMode, Error> {
+    let herdr_env = engine
+        .get_env_var("HERDR_ENV")
+        .map_err(|_| Error::invalid_herdr_context("caller environment is unavailable"))?
+        .as_ref()
+        .map(nu_value_to_env);
+    if !classify_herdr_env(herdr_env.as_ref())? {
+        return Ok(HerdrMode::Outside);
+    }
+
+    let vars = engine
+        .get_env_vars()
+        .map_err(|_| Error::invalid_herdr_context("caller environment is unavailable"))?;
+    let mut herdr_vars = BTreeMap::new();
+    for (key, value) in vars {
+        if !key.starts_with("HERDR_") {
+            continue;
+        }
+        match nu_value_to_env(&value) {
+            EnvValue::String(value) => {
+                herdr_vars.insert(key, value);
+            }
+            EnvValue::Other if key == "HERDR_ENV" => {}
+            EnvValue::Other => {
+                return Err(Error::invalid_herdr_context(format!(
+                    "{key} must be a string"
+                )));
+            }
+        }
+    }
+
+    let required = |name: &str| -> Result<String, Error> {
+        herdr_vars.get(name).cloned().ok_or_else(|| {
+            Error::invalid_herdr_context(format!("{name} is missing from the Herdr caller context"))
+        })
+    };
+
+    Ok(HerdrMode::Inside(inside_context(
+        &required("HERDR_BIN_PATH")?,
+        &required("HERDR_SOCKET_PATH")?,
+        &required("HERDR_WORKSPACE_ID")?,
+        &required("HERDR_TAB_ID")?,
+        &required("HERDR_PANE_ID")?,
+        herdr_vars,
+    )?))
+}
+
+fn nu_value_to_env(value: &Value) -> EnvValue {
+    match value {
+        Value::String { val, .. } => EnvValue::String(val.clone()),
+        _ => EnvValue::Other,
+    }
+}
+
 fn not_implemented(span: Span) -> LabeledError {
     LabeledError::new("hcd is not implemented yet")
         .with_label("navigation behavior will be added in later phases", span)
@@ -70,11 +129,14 @@ fn labeled_error(kind: ErrorKind, message: impl Into<String>, span: Span) -> Lab
 
 #[cfg(test)]
 mod tests {
-    use super::{COMMAND_NAME, Hcd, HerdrCdPlugin, labeled_error, not_implemented};
+    use super::{
+        COMMAND_NAME, Hcd, HerdrCdPlugin, labeled_error, not_implemented, nu_value_to_env,
+    };
     use crate::PLUGIN_IDENTITY;
     use crate::domain::ErrorKind;
+    use crate::herdr::{EnvValue, classify_herdr_env};
     use nu_plugin::{Plugin, PluginCommand};
-    use nu_protocol::{Span, SyntaxShape, Type};
+    use nu_protocol::{Span, SyntaxShape, Type, Value};
 
     #[test]
     fn plugin_identity_and_version_match_the_package() {
@@ -145,5 +207,25 @@ mod tests {
     #[test]
     fn hcd_command_name_is_stable() {
         assert_eq!(PluginCommand::name(&Hcd), COMMAND_NAME);
+    }
+
+    #[test]
+    fn caller_herdr_env_uses_nushell_values_not_process_env() {
+        assert!(matches!(
+            nu_value_to_env(&Value::test_string("1")),
+            EnvValue::String(value) if value == "1"
+        ));
+        assert!(matches!(
+            nu_value_to_env(&Value::test_int(1)),
+            EnvValue::Other
+        ));
+        assert!(!classify_herdr_env(None).unwrap());
+        assert!(classify_herdr_env(Some(&nu_value_to_env(&Value::test_string("1")))).unwrap());
+        assert!(
+            classify_herdr_env(Some(&nu_value_to_env(&Value::test_int(1))))
+                .unwrap_err()
+                .kind()
+                == ErrorKind::InvalidHerdrContext
+        );
     }
 }

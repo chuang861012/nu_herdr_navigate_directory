@@ -6,12 +6,13 @@ Last updated: 2026-08-22
 
 Planned initial version: 0.1.0
 
-Implementation status: Phase 1 plugin foundation and Phase 2 domain path
-model and decision engine are complete. Phases 3–6 have not started. The
-staged delivery plan is defined in
-[Implementation Phases](phases/README.md). This document remains the
-authoritative requirements and architecture specification; phase files define
-execution order and acceptance gates but must not override this document.
+Implementation status: Phases 1–3 are implemented. Phase 3 adds read-only
+Herdr inspection behind fake-CLI tests; `hcd` still returns not-implemented
+until later phases wire actions and orchestration. The staged delivery plan
+is defined in [Implementation Phases](phases/README.md). This document remains
+the authoritative requirements and architecture specification; phase files
+define execution order and acceptance gates but must not override this
+document.
 
 ## 1. Overview
 
@@ -84,8 +85,9 @@ The initial version supports Linux and macOS only. Other platforms return an
 
 The minimum supported Herdr version is 0.8.2. Each invocation validates the
 server version and protocol metadata returned by its first session snapshot.
-It does not rely on a separate `herdr --version` result and does not cache the
-capability result across calls.
+The 0.8.2 baseline requires snapshot `version` 0.8.2 or later and snapshot
+`protocol` 20 or later. It does not rely on a separate `herdr --version`
+result and does not cache the capability result across calls.
 
 Required Herdr capabilities include:
 
@@ -418,6 +420,20 @@ The child starts with the plugin process's general environment, but all
 `HERDR_*` values are overwritten from the current `EngineInterface` caller
 context. `HERDR_SOCKET_PATH` is always passed explicitly, and `HERDR_SESSION`
 is removed so it cannot redirect the command to another named session.
+
+Herdr 0.8.2 does not publish workspace identity cwd on `WorkspaceInfo`.
+Workspace root used for containment is therefore derived as follows:
+
+- `worktree.checkout_path` when the workspace record includes worktree
+  provenance;
+- otherwise the pane identity `cwd` of the first pane in the workspace's
+  first tab, using authoritative snapshot order.
+
+Missing or non-canonicalizable roots exclude that workspace from containment.
+Pane eligibility uses `foreground_cwd`, never the pane identity `cwd`.
+Live caller identity comes from `herdr pane current --current`, not from
+launch-time `HERDR_*` IDs. If that live pane is absent from the same snapshot,
+inspection returns a stale-state result for the single allowed recomputation.
 
 ### 14.3 Exact pane focus
 
