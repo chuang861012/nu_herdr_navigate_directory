@@ -215,10 +215,10 @@ fn parse_typed<T>(
         if error.code == "not_found" {
             return Ok(CommandResult::NotFound {
                 code: error.code,
-                message: sanitize_output(output, error.message.as_deref().unwrap_or("not found")),
+                message: super::sanitize_detail(error.message.as_deref().unwrap_or("not found")),
             });
         }
-        return Err(server_error(operation, &error, output).into());
+        return Err(server_error(operation, &error).into());
     }
 
     if !output.status.success() {
@@ -233,7 +233,7 @@ fn parse_typed<T>(
             operation,
             &format!(
                 "unexpected result kind {}",
-                sanitize_output(output, &result.kind)
+                super::sanitize_detail(&result.kind)
             ),
         )
         .into());
@@ -277,12 +277,12 @@ fn protocol(operation: &str, detail: &str) -> Error {
     Error::herdr_protocol(format!("{operation}: {detail}"))
 }
 
-fn server_error(operation: &str, error: &ErrorBody, output: &CliOutput) -> Error {
-    let code = sanitize_output(output, &error.code);
+fn server_error(operation: &str, error: &ErrorBody) -> Error {
+    let code = super::sanitize_detail(&error.code);
     let message = error
         .message
         .as_deref()
-        .map(|message| sanitize_output(output, message))
+        .map(super::sanitize_detail)
         .filter(|message| !message.is_empty());
     match message {
         Some(message) => Error::herdr_protocol(format!("{operation} failed ({code}: {message})")),
@@ -294,12 +294,8 @@ fn failed_status(operation: &str, output: &CliOutput) -> Error {
     let code = output.status.code().unwrap_or(-1);
     Error::herdr_transport(format!(
         "{operation} exited with status {code}: {}",
-        super::cli::utf8_lossy_sanitized(&output.stderr, &output.secrets)
+        super::cli::utf8_lossy_sanitized(&output.stderr)
     ))
-}
-
-fn sanitize_output(output: &CliOutput, text: &str) -> String {
-    super::sanitize_untrusted(text, &output.secrets)
 }
 
 #[cfg(test)]
@@ -314,10 +310,6 @@ mod tests {
     use std::process::ExitStatus;
 
     fn output(ok: bool, body: &str) -> CliOutput {
-        output_with_secrets(ok, body, Vec::new())
-    }
-
-    fn output_with_secrets(ok: bool, body: &str, secrets: Vec<String>) -> CliOutput {
         CliOutput {
             stdout: if ok {
                 body.as_bytes().to_vec()
@@ -334,7 +326,6 @@ mod tests {
             } else {
                 ExitStatus::from_raw(256)
             },
-            secrets,
         }
     }
 
@@ -479,12 +470,12 @@ mod tests {
     }
 
     #[test]
-    fn error_details_redact_socket_paths_and_environment() {
+    fn error_details_allow_socket_paths_and_redact_environment_assignments() {
         let stderr = "cannot connect to /tmp/nu-plugin-herdr-cd.sock HERDR_EXTRA=keep";
         let err = parse_snapshot(&output(false, stderr)).unwrap_err();
         match err {
             crate::herdr::cli::RunError::Failed(error) => {
-                assert!(!error.message().contains("/tmp/nu-plugin-herdr-cd.sock"));
+                assert!(error.message().contains("/tmp/nu-plugin-herdr-cd.sock"));
                 assert!(!error.message().contains("HERDR_EXTRA=keep"));
                 assert!(error.message().contains("<redacted>"));
             }
@@ -492,12 +483,10 @@ mod tests {
         }
 
         let json = r#"{"id":"x","error":{"code":"io","message":"connect /run/herdr failed"}}"#;
-        let err = parse_snapshot(&output_with_secrets(false, json, vec!["/run/herdr".into()]))
-            .unwrap_err();
+        let err = parse_snapshot(&output(false, json)).unwrap_err();
         match err {
             crate::herdr::cli::RunError::Failed(error) => {
-                assert!(!error.message().contains("/run/herdr"));
-                assert!(error.message().contains("<redacted>"));
+                assert!(error.message().contains("/run/herdr"));
             }
             crate::herdr::cli::RunError::Interrupted => panic!("unexpected interrupt"),
         }

@@ -35,7 +35,6 @@ pub(crate) struct CliOutput {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub status: ExitStatus,
-    pub(crate) secrets: Vec<String>,
 }
 
 /// Run the validated Herdr binary with separate argv values and no shell.
@@ -120,19 +119,7 @@ pub(crate) fn run(
         stdout: stdout.bytes,
         stderr: stderr.bytes,
         status,
-        secrets: redaction_secrets(context),
     })
-}
-
-fn redaction_secrets(context: &InsideContext) -> Vec<String> {
-    let mut secrets = vec![
-        context.socket_path.clone(),
-        context.bin.display().to_string(),
-    ];
-    secrets.retain(|secret| secret.chars().count() >= super::MIN_SECRET_CHARS);
-    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.chars().count()));
-    secrets.dedup();
-    secrets
 }
 
 fn apply_herdr_env(command: &mut Command, context: &InsideContext) {
@@ -219,8 +206,8 @@ fn take_reader(
     }
 }
 
-pub(crate) fn utf8_lossy_sanitized(bytes: &[u8], secrets: &[String]) -> String {
-    super::sanitize_untrusted(&String::from_utf8_lossy(bytes), secrets)
+pub(crate) fn utf8_lossy_sanitized(bytes: &[u8]) -> String {
+    super::sanitize_detail(&String::from_utf8_lossy(bytes))
 }
 
 #[cfg(test)]
@@ -448,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn error_details_do_not_expose_the_socket_path_from_stderr() {
+    fn error_details_may_include_the_socket_path_from_stderr() {
         let _cli = lock_cli();
         let (_dir, bin) =
             fake_script("printf 'cannot connect to %s\\n' \"$HERDR_SOCKET_PATH\" >&2\nexit 1\n");
@@ -463,8 +450,7 @@ mod tests {
         let err = crate::herdr::protocol::parse_snapshot(&output).unwrap_err();
         match err {
             RunError::Failed(error) => {
-                assert!(!error.message().contains(&context.socket_path));
-                assert!(error.message().contains("<redacted>"));
+                assert!(error.message().contains(&context.socket_path));
             }
             RunError::Interrupted => panic!("unexpected interrupt"),
         }
