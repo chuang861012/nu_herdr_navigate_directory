@@ -14,7 +14,7 @@ mod socket;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-pub(crate) use cli::RunError;
+pub(crate) use cli::{RunError, run_bounded};
 pub(crate) use context::{EnvValue, HerdrMode, InsideContext, classify_herdr_env, inside_context};
 pub(crate) use create::{create_tab, create_workspace};
 pub(crate) use focus::{FocusResult, focus_pane};

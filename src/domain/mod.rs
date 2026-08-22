@@ -7,7 +7,7 @@ mod decision;
 mod path;
 mod types;
 
-pub(crate) use decision::decide;
+pub(crate) use decision::{decide, nearest_containing_workspace};
 pub(crate) use path::{CanonicalPath, ResolvedPaths, resolve_paths};
 pub(crate) use types::{
     Action, AgentStatus, Caller, ForegroundProcess, Occupant, Pane, PaneId, Session,

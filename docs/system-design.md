@@ -267,6 +267,9 @@ A pane in another workspace is considered only after that workspace passes
 root containment. A pane that manually changed outside its workspace root does
 not make that workspace a candidate. The caller's own workspace is the only
 workspace whose exact-path pane search occurs before root containment.
+Process-info inspection for other workspaces is limited to that unique nearest
+containing workspace; a timeout or transport failure in a shallower containing
+workspace must not abort the command.
 
 ## 11. Decision algorithm
 
@@ -484,13 +487,16 @@ or workspace focus.
 | Tab or workspace creation | 5 seconds each |
 | Entire `hcd` invocation | 10 seconds total |
 
-The total deadline starts at command entry and includes path resolution,
-Herdr context and binary validation, Herdr I/O, and the one allowed
-recomputation. A child process that exceeds its limit is terminated and
-reaped. A socket operation that exceeds its limit is closed.
+The total deadline starts at command entry and is a hard maximum covering path
+resolution, Herdr context and binary validation, Herdr I/O, and the one
+allowed recomputation. Blocking caller-engine or filesystem lookups are
+waited on a helper thread so the command can return at the deadline or on
+interruption without waiting for the syscall to finish. A child process that
+exceeds its limit is terminated and reaped. A socket operation that exceeds
+its limit is closed.
 
 The command observes `EngineInterface::signals()`. On interruption it
-terminates any live child, closes any socket, skips all remaining actions and
+terminates any live child, closes any socket, skips remaining waits and
 retries, and returns Nushell's interruption error.
 
 Each CLI or socket JSON response is limited to 4 MiB. Exceeding the limit is a

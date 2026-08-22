@@ -7,7 +7,7 @@ use super::protocol::{
 };
 use crate::domain::{
     AgentStatus, Caller, CanonicalPath, Error, ForegroundProcess, Occupant, Pane, PaneId, Session,
-    ShellProcessEvidence, Tab, TabId, Workspace, WorkspaceId,
+    ShellProcessEvidence, Tab, TabId, Workspace, WorkspaceId, nearest_containing_workspace,
 };
 
 /// Live caller identity from `herdr pane current --current`.
@@ -42,7 +42,7 @@ pub(crate) fn inspect_session(
         CommandResult::NotFound { .. } => return Ok(SessionInspection::Stale),
     };
     protocol::require_supported_version(&snapshot)?;
-    let session = map_session(&snapshot)?;
+    let session = super::cli::run_bounded(&interrupted, move || map_session(&snapshot))??;
 
     let live_pane = match current_pane(context, &interrupted)? {
         CommandResult::Ok(pane) => pane,
@@ -83,29 +83,26 @@ pub(crate) fn inspect_process(
 
 /// Exact-path shell panes the decision tree is allowed to consider.
 ///
-/// Other workspaces are included only after they pass root containment, and
-/// only when cwd descent would not already win. The caller's workspace is the
-/// one exact-path search that happens before containment.
+/// The caller's workspace is always searched. Other workspaces are included
+/// only when cwd descent would not already win, and then only the unique
+/// nearest containing workspace.
 pub(crate) fn exact_path_shell_candidates<'a>(
     session: &'a Session,
     caller: &Caller,
     target: &CanonicalPath,
 ) -> Vec<&'a Pane> {
-    let inspect_other_workspaces = !caller.cwd.is_strict_ancestor_of(target);
-    session
+    let caller_workspace = session
         .workspaces
         .iter()
-        .filter(|workspace| {
-            if workspace.id == caller.workspace_id {
-                true
-            } else {
-                inspect_other_workspaces
-                    && workspace
-                        .root
-                        .as_ref()
-                        .is_some_and(|root| root.contains(target))
-            }
-        })
+        .find(|workspace| workspace.id == caller.workspace_id);
+    let nearest = (!caller.cwd.is_strict_ancestor_of(target))
+        .then(|| nearest_containing_workspace(session, &caller.workspace_id, target))
+        .flatten()
+        .filter(|workspace| workspace.id != caller.workspace_id);
+
+    caller_workspace
+        .into_iter()
+        .chain(nearest)
         .flat_map(|workspace| workspace.tabs.iter())
         .flat_map(|tab| tab.panes.iter())
         .filter(|pane| {
@@ -790,6 +787,117 @@ esac
         };
         let target = CanonicalPath::directory(&src).unwrap();
         assert!(exact_path_shell_candidates(&session, &caller, &target).is_empty());
+    }
+
+    #[test]
+    fn only_nearest_containing_workspace_shells_are_candidates() {
+        let caller_root = TempDir::new("caller-root");
+        let repo = TempDir::new("repo");
+        let src = repo.path().join("src");
+        fs::create_dir(&src).unwrap();
+        let extra_workspaces = format!(
+            r#", {{
+              "workspace_id": "w2",
+              "number": 2,
+              "label": "repo",
+              "focused": false,
+              "pane_count": 1,
+              "tab_count": 1,
+              "active_tab_id": "w2:t1",
+              "agent_status": "idle",
+              "worktree": {{
+                "repo_key": "k",
+                "repo_name": "n",
+                "repo_root": "{repo}",
+                "checkout_path": "{repo}",
+                "is_linked_worktree": true
+              }}
+            }}, {{
+              "workspace_id": "w3",
+              "number": 3,
+              "label": "src",
+              "focused": false,
+              "pane_count": 1,
+              "tab_count": 1,
+              "active_tab_id": "w3:t1",
+              "agent_status": "idle",
+              "worktree": {{
+                "repo_key": "k",
+                "repo_name": "n",
+                "repo_root": "{src}",
+                "checkout_path": "{src}",
+                "is_linked_worktree": true
+              }}
+            }}"#,
+            repo = repo.path().to_str().unwrap(),
+            src = src.to_str().unwrap()
+        );
+        let extra_tabs = r#", {
+          "tab_id": "w2:t1",
+          "workspace_id": "w2",
+          "number": 1,
+          "label": "repo",
+          "focused": false,
+          "pane_count": 1,
+          "agent_status": "idle"
+        }, {
+          "tab_id": "w3:t1",
+          "workspace_id": "w3",
+          "number": 1,
+          "label": "src",
+          "focused": false,
+          "pane_count": 1,
+          "agent_status": "idle"
+        }"#;
+        let extra_panes = format!(
+            r#", {{
+              "pane_id": "w2:p9",
+              "terminal_id": "term-w2",
+              "workspace_id": "w2",
+              "tab_id": "w2:t1",
+              "focused": true,
+              "agent_status": "idle",
+              "revision": 1,
+              "cwd": "{repo}",
+              "foreground_cwd": "{src}"
+            }}, {{
+              "pane_id": "w3:p1",
+              "terminal_id": "term-w3",
+              "workspace_id": "w3",
+              "tab_id": "w3:t1",
+              "focused": true,
+              "agent_status": "idle",
+              "revision": 1,
+              "cwd": "{src}",
+              "foreground_cwd": "{src}"
+            }}"#,
+            repo = repo.path().to_str().unwrap(),
+            src = src.to_str().unwrap()
+        );
+        let json = snapshot_json_extended(
+            caller_root.path().to_str().unwrap(),
+            "",
+            "",
+            &extra_workspaces,
+            extra_tabs,
+            &extra_panes,
+        );
+        let session = map_session_from_json(&json).unwrap();
+        let caller = Caller {
+            cwd: CanonicalPath::directory(caller_root.path()).unwrap(),
+            workspace_id: WorkspaceId::new("w1"),
+            tab_id: TabId::new("w1:t1"),
+            pane_id: PaneId::new("w1:p1"),
+        };
+        let target = CanonicalPath::directory(&src).unwrap();
+        let shells = exact_path_shell_candidates(&session, &caller, &target);
+        assert_eq!(
+            shells
+                .iter()
+                .map(|pane| pane.id.as_str())
+                .collect::<Vec<_>>(),
+            ["w3:p1"]
+        );
     }
 
     #[test]

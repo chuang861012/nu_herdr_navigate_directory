@@ -10,12 +10,14 @@ use nu_plugin::{EngineInterface, EvaluatedCall, Plugin, PluginCommand, SimplePlu
 use nu_protocol::{Category, LabeledError, ShellError, Signature, Span, SyntaxShape, Type, Value};
 
 use crate::domain::{Error, ErrorKind, resolve_paths};
-use crate::herdr::{EnvValue, HerdrMode, RunError, classify_herdr_env, inside_context};
+use crate::herdr::{
+    EnvValue, HerdrMode, RunError, classify_herdr_env, inside_context, run_bounded,
+};
 
-use orchestrate::{Outcome, TOTAL_DEADLINE, check, orchestrate};
+use orchestrate::{Outcome, TOTAL_DEADLINE, check, map_halt, orchestrate};
 
 /// Caller-side Nushell engine operations used by one `hcd` invocation.
-trait CallerEngine {
+trait CallerEngine: Clone + Send + 'static {
     fn interrupted(&self) -> bool;
     fn current_dir(&self) -> Result<String, Error>;
     fn env_var(&self, name: &str) -> Result<Option<Value>, Error>;
@@ -119,20 +121,25 @@ fn run_hcd(
     let target: String = call.req(0)?;
     let path_span = call.nth(0).map(|value| value.span()).unwrap_or(call.head);
     let to_labeled = |error: Error| labeled_error(&error, path_span, call.head);
+    let halt = || interrupted() || Instant::now() >= deadline;
 
-    check(&interrupted, deadline).map_err(&fail)?;
-    let caller_cwd = engine.current_dir().map_err(&to_labeled)?;
-    check(&interrupted, deadline).map_err(&fail)?;
-    let home = read_home(engine).map_err(&to_labeled)?;
-    check(&interrupted, deadline).map_err(&fail)?;
-    let paths =
-        resolve_paths(Path::new(&caller_cwd), &target, home.as_deref()).map_err(&to_labeled)?;
-    check(&interrupted, deadline).map_err(&fail)?;
-    let mode = read_herdr_mode(engine).map_err(&to_labeled)?;
+    let engine_worker = engine.clone();
+    let target_worker = target;
+    let (paths, mode) = match run_bounded(&halt, move || {
+        let caller_cwd = engine_worker.current_dir()?;
+        let home = read_home(&engine_worker)?;
+        let paths = resolve_paths(Path::new(&caller_cwd), &target_worker, home.as_deref())?;
+        let mode = read_herdr_mode(&engine_worker)?;
+        Ok::<_, Error>((paths, mode))
+    }) {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(error)) => return Err(to_labeled(error)),
+        Err(error) => return Err(fail(map_halt(error, &interrupted))),
+    };
     check(&interrupted, deadline).map_err(&fail)?;
 
     match orchestrate(&paths, &mode, &interrupted, deadline) {
-        Ok(outcome) => apply_outcome(engine, outcome, call.head, path_span),
+        Ok(outcome) => apply_outcome(engine, outcome, call.head, path_span, &halt, &interrupted),
         Err(error) => Err(fail(error)),
     }
 }
@@ -142,24 +149,37 @@ fn apply_outcome(
     outcome: Outcome,
     head: Span,
     path_span: Span,
+    halt: &dyn Fn() -> bool,
+    interrupted: &dyn Fn() -> bool,
 ) -> Result<Value, LabeledError> {
     match outcome {
         Outcome::Silent => Ok(Value::nothing(head)),
         Outcome::ChangeDirectory { path } => {
-            engine
-                .add_env_var("PWD", Value::string(path.as_str(), path_span))
-                .map_err(|error| labeled_error(&error, path_span, head))?;
-            Ok(Value::nothing(head))
+            let engine_worker = engine.clone();
+            let value = Value::string(path.as_str(), path_span);
+            match run_bounded(halt, move || engine_worker.add_env_var("PWD", value)) {
+                Ok(Ok(())) => Ok(Value::nothing(head)),
+                Ok(Err(error)) => Err(labeled_error(&error, path_span, head)),
+                Err(error) => Err(map_run_error_parts(
+                    map_halt(error, interrupted),
+                    path_span,
+                    head,
+                )),
+            }
         }
+    }
+}
+
+fn map_run_error_parts(error: RunError, path_span: Span, head: Span) -> LabeledError {
+    match error {
+        RunError::Interrupted => interrupt_error(head),
+        RunError::Failed(error) => labeled_error(&error, path_span, head),
     }
 }
 
 fn map_run_error(error: RunError, call: &EvaluatedCall) -> LabeledError {
     let path_span = call.nth(0).map(|value| value.span()).unwrap_or(call.head);
-    match error {
-        RunError::Interrupted => interrupt_error(call.head),
-        RunError::Failed(error) => labeled_error(&error, path_span, call.head),
-    }
+    map_run_error_parts(error, path_span, call.head)
 }
 
 fn platform_is_supported() -> bool {
@@ -248,8 +268,9 @@ mod tests {
     use crate::herdr::{EnvValue, classify_herdr_env};
     use nu_plugin::{EvaluatedCall, Plugin, PluginCommand};
     use nu_protocol::{Span, SyntaxShape, Type, Value};
-    use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -300,13 +321,14 @@ mod tests {
         assert!(!signature.allows_unknown_args);
     }
 
+    #[derive(Clone)]
     struct FakeEngine {
         cwd: String,
         env: HashMap<String, Value>,
-        interrupted: bool,
+        interrupted: Arc<AtomicBool>,
         cwd_delay: Duration,
-        env_writes: RefCell<Vec<(String, String)>>,
-        cwd_calls: RefCell<usize>,
+        env_writes: Arc<Mutex<Vec<(String, String)>>>,
+        cwd_calls: Arc<AtomicUsize>,
     }
 
     impl FakeEngine {
@@ -314,21 +336,25 @@ mod tests {
             Self {
                 cwd: cwd.to_string(),
                 env: HashMap::new(),
-                interrupted: false,
+                interrupted: Arc::new(AtomicBool::new(false)),
                 cwd_delay: Duration::ZERO,
-                env_writes: RefCell::new(Vec::new()),
-                cwd_calls: RefCell::new(0),
+                env_writes: Arc::new(Mutex::new(Vec::new())),
+                cwd_calls: Arc::new(AtomicUsize::new(0)),
             }
+        }
+
+        fn writes(&self) -> Vec<(String, String)> {
+            self.env_writes.lock().expect("env writes").clone()
         }
     }
 
     impl CallerEngine for FakeEngine {
         fn interrupted(&self) -> bool {
-            self.interrupted
+            self.interrupted.load(Ordering::Relaxed)
         }
 
         fn current_dir(&self) -> Result<String, Error> {
-            *self.cwd_calls.borrow_mut() += 1;
+            self.cwd_calls.fetch_add(1, Ordering::SeqCst);
             if !self.cwd_delay.is_zero() {
                 thread::sleep(self.cwd_delay);
             }
@@ -349,7 +375,8 @@ mod tests {
                 other => format!("{other:?}"),
             };
             self.env_writes
-                .borrow_mut()
+                .lock()
+                .expect("env writes")
                 .push((name.to_string(), rendered));
             Ok(())
         }
@@ -371,10 +398,12 @@ mod tests {
             Outcome::Silent,
             Span::test_data(),
             Span::test_data(),
+            &|| false,
+            &|| false,
         )
         .unwrap();
         assert!(value.is_nothing());
-        assert!(silent.env_writes.borrow().is_empty());
+        assert!(silent.writes().is_empty());
 
         let changed = FakeEngine::outside(cwd_str);
         let value = apply_outcome(
@@ -382,11 +411,13 @@ mod tests {
             Outcome::ChangeDirectory { path: path.clone() },
             Span::test_data(),
             Span::test_data(),
+            &|| false,
+            &|| false,
         )
         .unwrap();
         assert!(value.is_nothing());
         assert_eq!(
-            changed.env_writes.borrow().as_slice(),
+            changed.writes().as_slice(),
             [("PWD".to_string(), path.as_str().to_string())]
         );
 
@@ -399,13 +430,13 @@ mod tests {
         .unwrap();
         assert!(value.is_nothing());
         assert_eq!(
-            engine.env_writes.borrow().as_slice(),
+            engine.writes().as_slice(),
             [("PWD".to_string(), path.as_str().to_string())]
         );
     }
 
     #[test]
-    fn total_deadline_covers_caller_cwd_lookup() {
+    fn total_deadline_is_a_hard_maximum_for_blocking_lookup() {
         let cwd = std::env::temp_dir();
         let cwd_str = cwd.to_str().expect("temp dir is UTF-8");
 
@@ -415,20 +446,50 @@ mod tests {
             .expect("clock has elapsed at least one second");
         let error = run_hcd(&expired, &test_call(cwd_str), deadline).unwrap_err();
         assert_eq!(error.code.as_deref(), Some("herdr_cd::herdr_timeout"));
-        assert_eq!(*expired.cwd_calls.borrow(), 0);
-        assert!(expired.env_writes.borrow().is_empty());
+        assert_eq!(expired.cwd_calls.load(Ordering::SeqCst), 0);
+        assert!(expired.writes().is_empty());
 
         let mut slow = FakeEngine::outside(cwd_str);
-        slow.cwd_delay = Duration::from_millis(80);
+        slow.cwd_delay = Duration::from_millis(200);
+        let started = Instant::now();
         let error = run_hcd(
             &slow,
             &test_call(cwd_str),
-            Instant::now() + Duration::from_millis(20),
+            Instant::now() + Duration::from_millis(30),
         )
         .unwrap_err();
         assert_eq!(error.code.as_deref(), Some("herdr_cd::herdr_timeout"));
-        assert_eq!(*slow.cwd_calls.borrow(), 1);
-        assert!(slow.env_writes.borrow().is_empty());
+        assert!(
+            started.elapsed() < Duration::from_millis(80),
+            "deadline must abort before the blocking lookup returns, elapsed {:?}",
+            started.elapsed()
+        );
+        assert!(slow.writes().is_empty());
+
+        let mut blocked = FakeEngine::outside(cwd_str);
+        blocked.cwd_delay = Duration::from_millis(200);
+        let stop = blocked.interrupted.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            stop.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let error = run_hcd(
+            &blocked,
+            &test_call(cwd_str),
+            Instant::now() + TOTAL_DEADLINE,
+        )
+        .unwrap_err();
+        assert!(
+            error.msg.to_lowercase().contains("interrupt"),
+            "expected interruption, got {error:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(80),
+            "interruption must abort before the blocking lookup returns, elapsed {:?}",
+            started.elapsed()
+        );
+        assert!(blocked.writes().is_empty());
     }
 
     #[test]

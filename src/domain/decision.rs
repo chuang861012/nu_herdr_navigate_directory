@@ -52,7 +52,7 @@ fn find_workspace<'a>(session: &'a Session, id: &WorkspaceId) -> Option<&'a Work
         .find(|workspace| &workspace.id == id)
 }
 
-fn nearest_containing_workspace<'a>(
+pub(crate) fn nearest_containing_workspace<'a>(
     session: &'a Session,
     caller_workspace_id: &WorkspaceId,
     target: &CanonicalPath,

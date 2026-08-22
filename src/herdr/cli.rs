@@ -126,6 +126,36 @@ pub(crate) fn run(
     })
 }
 
+/// Run blocking work on a helper thread so the caller can honor halt/deadline.
+///
+/// The helper is abandoned if halt becomes true before it finishes. The syscall
+/// may continue until the kernel returns; `hcd` itself does not wait.
+pub(crate) fn run_bounded<T: Send + 'static>(
+    halt: &dyn Fn() -> bool,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, RunError> {
+    if halt() {
+        return Err(RunError::Interrupted);
+    }
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    loop {
+        match rx.recv_timeout(POLL_INTERVAL) {
+            Ok(value) => return Ok(value),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if halt() {
+                    return Err(RunError::Interrupted);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(Error::herdr_transport("bounded work ended without a result").into());
+            }
+        }
+    }
+}
+
 fn apply_herdr_env(command: &mut Command, context: &InsideContext) {
     for (key, _) in std::env::vars() {
         if key.starts_with("HERDR_") {
@@ -216,13 +246,14 @@ pub(crate) fn utf8_lossy_sanitized(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{READ_TIMEOUT, RunError, run};
+    use super::{READ_TIMEOUT, RunError, run, run_bounded};
     use crate::domain::ErrorKind;
     use crate::herdr::context::inside_context;
     use crate::herdr::test_support::{TempDir, chmod, lock_cli, write_executable};
     use std::collections::BTreeMap;
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
     use std::time::{Duration, Instant};
 
     fn context_for(bin: &std::path::Path) -> crate::herdr::context::InsideContext {
@@ -248,6 +279,25 @@ mod tests {
             &format!("#!/bin/sh\nset -eu\n{body}\n"),
         );
         (dir, bin)
+    }
+
+    #[test]
+    fn run_bounded_returns_before_blocking_work_finishes() {
+        let deadline = Instant::now() + Duration::from_millis(30);
+        let halt = || Instant::now() >= deadline;
+        let started = Instant::now();
+        let error = run_bounded(&halt, || {
+            thread::sleep(Duration::from_millis(200));
+            1
+        })
+        .unwrap_err();
+        assert!(matches!(error, RunError::Interrupted));
+        assert!(
+            started.elapsed() < Duration::from_millis(80),
+            "bounded wait must return at halt, elapsed {:?}",
+            started.elapsed()
+        );
+        assert_eq!(run_bounded(&|| false, || 7).unwrap(), 7);
     }
 
     #[test]

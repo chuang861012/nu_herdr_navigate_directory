@@ -32,8 +32,8 @@ errors, and behavior-level tests.
   create, then workspace create.
 - [x] [Agent] Inspect process information only for exact-path shell candidates
   whose idle state is not already determined by agent status, and only in
-  workspaces the decision tree may select. Other workspaces must pass root
-  containment first; cwd descent does not inspect them.
+  workspaces the decision tree may select: the caller workspace, and when cwd
+  descent does not apply, the unique nearest containing workspace.
 - [x] [Agent] Execute exactly the returned domain action and keep successful
   output silent.
 - [x] [Agent] Confirm Herdr navigation and create actions never change the
@@ -46,9 +46,10 @@ errors, and behavior-level tests.
 - [x] [Agent] Recompute once immediately before creation and execute the new
   decision instead if a reusable pane or better workspace has appeared.
 - [x] [Agent] Never recompute more than once for one invocation.
-- [x] [Agent] Enforce the 10-second total deadline from command entry, covering
-  path and context I/O as well as Herdr work, in addition to operation
-  timeouts.
+- [x] [Agent] Enforce the 10-second total deadline from command entry as a hard
+  maximum, covering path and context I/O as well as Herdr work, in addition to
+  operation timeouts. Blocking lookups must not delay the timeout or
+  interruption past the deadline.
 - [x] [Agent] On Nushell interruption, terminate/reap a child or close a socket,
   skip remaining work, and return an interruption error.
 

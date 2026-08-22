@@ -236,7 +236,7 @@ pub(crate) fn check(interrupted: &dyn Fn() -> bool, deadline: Instant) -> Result
     }
 }
 
-fn map_halt(error: RunError, interrupted: &dyn Fn() -> bool) -> RunError {
+pub(crate) fn map_halt(error: RunError, interrupted: &dyn Fn() -> bool) -> RunError {
     match error {
         RunError::Interrupted if interrupted() => RunError::Interrupted,
         RunError::Interrupted => {
@@ -1216,6 +1216,82 @@ esac
         );
         server.join().unwrap();
         assert_eq!(world.count_prefix("pane process-info --pane w2:p1"), 1);
+        assert_eq!(world.count_prefix("tab create"), 0);
+        assert_eq!(world.count_prefix("workspace create"), 0);
+    }
+
+    #[test]
+    fn non_nearest_containing_workspace_process_info_is_not_inspected() {
+        let world = World::new();
+        let repo = world.repo_str();
+        let src = world.src_str();
+        let other = world.other_str();
+        world.write_snapshot1(workspace_snapshot(
+            "w1",
+            &[
+                workspace_record("w1", "w1:t1", Some(&other)),
+                workspace_record("w2", "w2:t1", Some(&repo)),
+                workspace_record("w3", "w3:t1", Some(&src)),
+            ],
+            &[
+                tab_record("w1:t1", "w1"),
+                tab_record("w2:t1", "w2"),
+                tab_record("w3:t1", "w3"),
+            ],
+            &[
+                json!({
+                    "pane_id": "w1:p1",
+                    "terminal_id": "term-p1",
+                    "workspace_id": "w1",
+                    "tab_id": "w1:t1",
+                    "focused": true,
+                    "agent_status": "idle",
+                    "revision": 1,
+                    "cwd": other,
+                    "foreground_cwd": other
+                }),
+                json!({
+                    "pane_id": "w2:p9",
+                    "terminal_id": "term-w2",
+                    "workspace_id": "w2",
+                    "tab_id": "w2:t1",
+                    "focused": true,
+                    "agent_status": "idle",
+                    "revision": 1,
+                    "cwd": repo,
+                    "foreground_cwd": src
+                }),
+                json!({
+                    "pane_id": "w3:p1",
+                    "terminal_id": "term-w3",
+                    "workspace_id": "w3",
+                    "tab_id": "w3:t1",
+                    "focused": true,
+                    "agent_status": "idle",
+                    "revision": 1,
+                    "cwd": src,
+                    "foreground_cwd": src
+                }),
+            ],
+            &[
+                layout_record("w1", "w1:t1", "w1:p1"),
+                layout_record("w2", "w2:t1", "w2:p9"),
+                layout_record("w3", "w3:t1", "w3:p1"),
+            ],
+        ));
+        world.write_current1(current_json("w1:p1", "w1:t1", "w1", &other));
+        world.set_process_sleep("w2:p9", 3);
+        let server = serve_focus(&world.socket_path(), vec![FocusReply::Ok]);
+        let started = Instant::now();
+        assert_silent(
+            world
+                .run_from(&world.other, world.src.to_str().unwrap())
+                .unwrap(),
+        );
+        server.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(world.count_prefix("pane process-info --pane w2:p9"), 0);
+        assert_eq!(world.count_prefix("pane process-info --pane w3:p1"), 1);
         assert_eq!(world.count_prefix("tab create"), 0);
         assert_eq!(world.count_prefix("workspace create"), 0);
     }
