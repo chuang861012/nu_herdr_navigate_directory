@@ -171,21 +171,40 @@ fn map_session(snapshot: &RawSnapshot) -> Result<Session, Error> {
         }
         seen_workspaces.push(workspace.workspace_id.clone());
     }
+    let mut seen_tabs = Vec::new();
     for tab in &snapshot.tabs {
         require_id("tab", &tab.tab_id)?;
+        if seen_tabs.contains(&tab.tab_id) {
+            return Err(Error::herdr_protocol(
+                "session snapshot contains a duplicate tab id",
+            ));
+        }
         if !seen_workspaces.iter().any(|id| id == &tab.workspace_id) {
             return Err(Error::herdr_protocol(
                 "session snapshot tab references an unknown workspace",
             ));
         }
+        seen_tabs.push(tab.tab_id.clone());
     }
+    let mut seen_panes = Vec::new();
     for pane in &snapshot.panes {
         require_id("pane", &pane.pane_id)?;
-        if !snapshot.tabs.iter().any(|tab| tab.tab_id == pane.tab_id) {
+        if seen_panes.contains(&pane.pane_id) {
+            return Err(Error::herdr_protocol(
+                "session snapshot contains a duplicate pane id",
+            ));
+        }
+        let Some(tab) = snapshot.tabs.iter().find(|tab| tab.tab_id == pane.tab_id) else {
             return Err(Error::herdr_protocol(
                 "session snapshot pane references an unknown tab",
             ));
+        };
+        if pane.workspace_id != tab.workspace_id {
+            return Err(Error::herdr_protocol(
+                "session snapshot pane workspace does not match its tab",
+            ));
         }
+        seen_panes.push(pane.pane_id.clone());
     }
 
     let workspaces = snapshot
@@ -330,6 +349,17 @@ mod tests {
     use std::fs;
 
     fn snapshot_json(root: &str, extra_pane: &str, extra_workspace: &str) -> String {
+        snapshot_json_extended(root, extra_pane, extra_workspace, "", "", "")
+    }
+
+    fn snapshot_json_extended(
+        root: &str,
+        extra_pane: &str,
+        extra_workspace: &str,
+        extra_workspaces: &str,
+        extra_tabs: &str,
+        extra_panes: &str,
+    ) -> String {
         format!(
             r#"{{
               "id": "cli:session:snapshot",
@@ -348,7 +378,7 @@ mod tests {
                     "tab_count": 1,
                     "active_tab_id": "w1:t1",
                     "agent_status": "idle"{extra_workspace}
-                  }}],
+                  }}{extra_workspaces}],
                   "tabs": [{{
                     "tab_id": "w1:t1",
                     "workspace_id": "w1",
@@ -357,7 +387,7 @@ mod tests {
                     "focused": true,
                     "pane_count": 2,
                     "agent_status": "idle"
-                  }}],
+                  }}{extra_tabs}],
                   "panes": [{{
                     "pane_id": "w1:p1",
                     "terminal_id": "term1",
@@ -378,7 +408,7 @@ mod tests {
                     "revision": 2,
                     "agent": "codex",
                     "foreground_cwd": "{root}/src"{extra_pane}
-                  }}],
+                  }}{extra_panes}],
                   "layouts": [{{
                     "workspace_id": "w1",
                     "tab_id": "w1:t1",
@@ -393,6 +423,18 @@ mod tests {
               }}
             }}"#
         )
+    }
+
+    fn map_session_from_json(json: &str) -> Result<crate::domain::Session, crate::domain::Error> {
+        let output = crate::herdr::cli::CliOutput {
+            stdout: json.as_bytes().to_vec(),
+            stderr: Vec::new(),
+            status: std::os::unix::process::ExitStatusExt::from_raw(0),
+        };
+        let CommandResult::Ok(raw) = parse_snapshot(&output).unwrap() else {
+            panic!("snapshot");
+        };
+        map_session(&raw)
     }
 
     fn current_json(root: &str, pane_id: &str) -> String {
@@ -675,6 +717,82 @@ printf '{"id":"x","result":{"type":"pane_process_info","process_info":{"pane_id"
             session.workspaces[0].root.as_ref(),
             Some(&CanonicalPath::directory(checkout.path()).unwrap())
         );
+    }
+
+    #[test]
+    fn snapshot_rejects_duplicate_tab_and_pane_ids() {
+        let root = TempDir::new("dup-ids");
+        let path = root.path().to_str().unwrap();
+        let duplicate_tab = r#", {
+          "tab_id": "w1:t1",
+          "workspace_id": "w1",
+          "number": 2,
+          "label": "dup",
+          "focused": false,
+          "pane_count": 0,
+          "agent_status": "idle"
+        }"#;
+        let err =
+            map_session_from_json(&snapshot_json_extended(path, "", "", "", duplicate_tab, ""))
+                .unwrap_err();
+        assert_eq!(err.kind(), crate::domain::ErrorKind::HerdrProtocol);
+        assert!(err.message().contains("duplicate tab id"));
+
+        let duplicate_pane = r#", {
+          "pane_id": "w1:p1",
+          "terminal_id": "term9",
+          "workspace_id": "w1",
+          "tab_id": "w1:t1",
+          "focused": false,
+          "agent_status": "idle",
+          "revision": 9
+        }"#;
+        let err = map_session_from_json(&snapshot_json_extended(
+            path,
+            "",
+            "",
+            "",
+            "",
+            duplicate_pane,
+        ))
+        .unwrap_err();
+        assert_eq!(err.kind(), crate::domain::ErrorKind::HerdrProtocol);
+        assert!(err.message().contains("duplicate pane id"));
+    }
+
+    #[test]
+    fn snapshot_rejects_pane_workspace_that_does_not_match_its_tab() {
+        let root = TempDir::new("mismatch-ids");
+        let extra_workspace = r#", {
+          "workspace_id": "w2",
+          "number": 2,
+          "label": "other",
+          "focused": false,
+          "pane_count": 0,
+          "tab_count": 0,
+          "active_tab_id": "w2:t1",
+          "agent_status": "idle"
+        }"#;
+        let mismatched_pane = r#", {
+          "pane_id": "w2:p9",
+          "terminal_id": "term9",
+          "workspace_id": "w2",
+          "tab_id": "w1:t1",
+          "focused": false,
+          "agent_status": "idle",
+          "revision": 9
+        }"#;
+        let err = map_session_from_json(&snapshot_json_extended(
+            root.path().to_str().unwrap(),
+            "",
+            "",
+            extra_workspace,
+            "",
+            mismatched_pane,
+        ))
+        .unwrap_err();
+        assert_eq!(err.kind(), crate::domain::ErrorKind::HerdrProtocol);
+        assert!(err.message().contains("workspace does not match its tab"));
     }
 
     #[test]
