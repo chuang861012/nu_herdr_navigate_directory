@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Authenticate the connected Herdr Unix-socket peer as the current user before
+  sending a pane-focus request. A replaced socket path whose peer is not the
+  current user is now a transport error.
+
+## [0.1.0] - 2026-08-23
+
 ### Added
 
 - `hcd <path>`, a Herdr-aware directory navigation command for Nushell on Linux
@@ -17,10 +25,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and returns nothing. Requires Nushell 0.115 and, inside a Herdr session,
   Herdr 0.8.2 or later.
 
-### Security
-
-- Authenticate the connected Herdr Unix-socket peer as the current user before
-  sending a pane-focus request. A replaced socket path whose peer is not the
-  current user is now a transport error.
-
-[Unreleased]: https://github.com/chuang861012/nu_herdr_cd/commits/HEAD
+[Unreleased]: https://github.com/chuang861012/nu_herdr_cd/compare/0.1.0...HEAD
+[0.1.0]: https://github.com/chuang861012/nu_herdr_cd/releases/tag/0.1.0
