@@ -206,6 +206,39 @@ fn map_session(snapshot: &RawSnapshot) -> Result<Session, Error> {
         }
         seen_panes.push(pane.pane_id.clone());
     }
+    if let Some(id) = snapshot
+        .focused_workspace_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        && !seen_workspaces.iter().any(|known| known == id)
+    {
+        return Err(Error::herdr_protocol(
+            "session snapshot focused workspace is unknown",
+        ));
+    }
+    for layout in &snapshot.layouts {
+        require_id("layout tab", &layout.tab_id)?;
+        let Some(tab) = snapshot.tabs.iter().find(|tab| tab.tab_id == layout.tab_id) else {
+            return Err(Error::herdr_protocol(
+                "session snapshot layout references an unknown tab",
+            ));
+        };
+        if layout.workspace_id != tab.workspace_id {
+            return Err(Error::herdr_protocol(
+                "session snapshot layout workspace does not match its tab",
+            ));
+        }
+        require_id("layout focused pane", &layout.focused_pane_id)?;
+        if !snapshot
+            .panes
+            .iter()
+            .any(|pane| pane.pane_id == layout.focused_pane_id && pane.tab_id == layout.tab_id)
+        {
+            return Err(Error::herdr_protocol(
+                "session snapshot layout focused pane is unknown or not in this tab",
+            ));
+        }
+    }
 
     let workspaces = snapshot
         .workspaces
@@ -230,6 +263,15 @@ fn map_workspace(workspace: &RawWorkspace, snapshot: &RawSnapshot) -> Result<Wor
         .filter(|tab| tab.workspace_id == workspace.workspace_id)
         .map(|tab| map_tab(tab, snapshot))
         .collect::<Result<Vec<_>, _>>()?;
+    require_id("workspace active tab", &workspace.active_tab_id)?;
+    if !tabs
+        .iter()
+        .any(|tab| tab.id.as_str() == workspace.active_tab_id)
+    {
+        return Err(Error::herdr_protocol(
+            "session snapshot workspace active tab is unknown or not in this workspace",
+        ));
+    }
 
     Ok(Workspace {
         id: WorkspaceId::new(workspace.workspace_id.clone()),
@@ -269,16 +311,14 @@ fn map_tab(tab: &RawTab, snapshot: &RawSnapshot) -> Result<Tab, Error> {
         .layouts
         .iter()
         .find(|layout| layout.tab_id == tab.tab_id)
-        .map(|layout| layout.focused_pane_id.as_str())
+        .map(|layout| PaneId::new(layout.focused_pane_id.clone()))
         .or_else(|| {
             snapshot
                 .panes
                 .iter()
                 .find(|pane| pane.tab_id == tab.tab_id && pane.focused)
-                .map(|pane| pane.pane_id.as_str())
-        })
-        .filter(|id| panes.iter().any(|pane| pane.id.as_str() == *id))
-        .map(PaneId::new);
+                .map(|pane| PaneId::new(pane.pane_id.clone()))
+        });
 
     Ok(Tab {
         id: TabId::new(tab.tab_id.clone()),
@@ -343,7 +383,7 @@ mod tests {
     use crate::domain::CanonicalPath;
     use crate::domain::{AgentStatus, Occupant, PaneId, WorkspaceId};
     use crate::herdr::context::inside_context;
-    use crate::herdr::protocol::{CommandResult, parse_snapshot};
+    use crate::herdr::protocol::{CommandResult, RawSnapshot, parse_snapshot};
     use crate::herdr::test_support::{TempDir, lock_cli, write_executable};
     use std::collections::BTreeMap;
     use std::fs;
@@ -426,6 +466,10 @@ mod tests {
     }
 
     fn map_session_from_json(json: &str) -> Result<crate::domain::Session, crate::domain::Error> {
+        map_session(&raw_snapshot(json))
+    }
+
+    fn raw_snapshot(json: &str) -> RawSnapshot {
         let output = crate::herdr::cli::CliOutput {
             stdout: json.as_bytes().to_vec(),
             stderr: Vec::new(),
@@ -434,7 +478,17 @@ mod tests {
         let CommandResult::Ok(raw) = parse_snapshot(&output).unwrap() else {
             panic!("snapshot");
         };
-        map_session(&raw)
+        raw
+    }
+
+    fn assert_protocol_error(snapshot: &RawSnapshot, detail: &str) {
+        let err = map_session(snapshot).unwrap_err();
+        assert_eq!(err.kind(), crate::domain::ErrorKind::HerdrProtocol);
+        assert!(
+            err.message().contains(detail),
+            "expected {detail:?} in {}",
+            err.message()
+        );
     }
 
     fn current_json(root: &str, pane_id: &str) -> String {
@@ -758,6 +812,69 @@ printf '{"id":"x","result":{"type":"pane_process_info","process_info":{"pane_id"
         .unwrap_err();
         assert_eq!(err.kind(), crate::domain::ErrorKind::HerdrProtocol);
         assert!(err.message().contains("duplicate pane id"));
+    }
+
+    #[test]
+    fn snapshot_rejects_inconsistent_focus_ids() {
+        let root = TempDir::new("focus-ids");
+        let json = snapshot_json(root.path().to_str().unwrap(), "", "");
+
+        let mut unknown_workspace = raw_snapshot(&json);
+        unknown_workspace.focused_workspace_id = Some("w-missing".into());
+        assert_protocol_error(&unknown_workspace, "focused workspace is unknown");
+
+        let mut empty_workspace = raw_snapshot(&json);
+        empty_workspace.focused_workspace_id = Some(String::new());
+        assert!(
+            map_session(&empty_workspace)
+                .unwrap()
+                .focused_workspace_id
+                .is_none()
+        );
+
+        let extra_workspace = r#", {
+          "workspace_id": "w2",
+          "number": 2,
+          "label": "other",
+          "focused": false,
+          "pane_count": 0,
+          "tab_count": 1,
+          "active_tab_id": "w2:t1",
+          "agent_status": "idle"
+        }"#;
+        let extra_tab = r#", {
+          "tab_id": "w2:t1",
+          "workspace_id": "w2",
+          "number": 1,
+          "label": "other",
+          "focused": false,
+          "pane_count": 0,
+          "agent_status": "idle"
+        }"#;
+        let mut foreign_tab = raw_snapshot(&snapshot_json_extended(
+            root.path().to_str().unwrap(),
+            "",
+            "",
+            extra_workspace,
+            extra_tab,
+            "",
+        ));
+        foreign_tab.workspaces[0].active_tab_id = "w2:t1".into();
+        assert_protocol_error(
+            &foreign_tab,
+            "active tab is unknown or not in this workspace",
+        );
+
+        let mut layout_workspace = raw_snapshot(&json);
+        layout_workspace.layouts[0].workspace_id = "w2".into();
+        assert_protocol_error(&layout_workspace, "layout workspace does not match its tab");
+
+        let mut layout_pane = raw_snapshot(&json);
+        layout_pane.layouts[0].focused_pane_id = "w1:missing".into();
+        assert_protocol_error(
+            &layout_pane,
+            "layout focused pane is unknown or not in this tab",
+        );
     }
 
     #[test]
