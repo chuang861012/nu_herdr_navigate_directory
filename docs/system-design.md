@@ -2,16 +2,15 @@
 
 Status: approved design baseline
 
-Last updated: 2026-08-22
+Last updated: 2026-08-23
 
 Planned initial version: 0.1.0
 
-Implementation status: Phases 1–3 are complete. Phase 4 implements exact-pane
+Implementation status: Phases 1–4 are complete. Phase 4 provides exact-pane
 focus and focused tab/workspace creation behind typed APIs and fake
 socket/CLI tests. `hcd` still returns not-implemented until phase 5 wires
-orchestration. Phase 4 awaits the action safety review. Phases 5–6 have not
-started. The staged delivery plan is defined in
-[Implementation Phases](phases/README.md). This document remains the
+orchestration. Phases 5–6 have not started. The staged delivery plan is
+defined in [Implementation Phases](phases/README.md). This document remains the
 authoritative requirements and architecture specification; phase files define
 execution order and acceptance gates but must not override this document.
 

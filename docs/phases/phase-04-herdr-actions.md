@@ -18,55 +18,55 @@ the complete `hcd` decision loop.
 ### 1. Exact-pane focus transport
 
 - [x] [Agent] Require an absolute existing Unix socket owned by the effective
-  user and reject a regular file or foreign-owned socket.
+      user and reject a regular file or foreign-owned socket.
 - [x] [Agent] Open one synchronous connection per focus action and send one
-  newline-delimited `pane.focus` request with a unique request ID and exact
-  `pane_id`.
+      newline-delimited `pane.focus` request with a unique request ID and exact
+      `pane_id`.
 - [x] [Agent] Enforce the 2-second timeout, 4 MiB response cap, request-ID
-  matching, typed success validation, Herdr error handling, and interruption.
+      matching, typed success validation, Herdr error handling, and interruption.
 - [x] [Agent] Close the socket after one response and never fall back to tab or
-  workspace focus.
+      workspace focus.
 
 ### 2. Creation operations
 
 - [x] [Agent] Implement `tab create` with explicit workspace ID, canonical
-  target cwd, `--focus`, and no label.
+      target cwd, `--focus`, and no label.
 - [x] [Agent] Implement `workspace create` with canonical target cwd,
-  `--focus`, and no label.
+      `--focus`, and no label.
 - [x] [Agent] Enforce the 5-second creation timeout and validate returned
-  workspace, tab, and root-pane identities as applicable.
+      workspace, tab, and root-pane identities as applicable.
 - [x] [Agent] Do not change the calling pane's cwd during any Herdr action.
 
 ### 3. Failure and safety behavior
 
 - [x] [Agent] Return typed `not_found`, timeout, transport, protocol, and Herdr
-  action failures for phase-5 orchestration.
+      action failures for phase-5 orchestration.
 - [x] [Agent] Report that a create may have partially completed when success is
-  ambiguous after dispatch.
+      ambiguous after dispatch.
 - [x] [Agent] Never roll back by closing a pane, tab, or workspace.
 - [x] [Agent] Confirm that no action path can move, delete, overwrite, close,
-  or send input to an existing resource.
+      or send input to an existing resource.
 
 ### 4. Transport verification
 
 - [x] [Agent] Use a temporary fake Unix socket server to cover the exact focus
-  request, response matching, errors, malformed JSON, size limit, timeout, and
-  interruption.
+      request, response matching, errors, malformed JSON, size limit, timeout, and
+      interruption.
 - [x] [Agent] Use the fake CLI to verify exact create argv, focus flags, omitted
-  labels, response validation, timeout, and ambiguous completion.
+      labels, response validation, timeout, and ambiguous completion.
 
 ## User actions and confirmation
 
 - [x] [User action] No live Herdr mutation is required by the automated tests.
-- [ ] [User confirmation] Review the exact-pane focus protocol, create argv,
-  and evidence that failures never trigger destructive rollback.
+- [x] [User confirmation] Review the exact-pane focus protocol, create argv,
+      and evidence that failures never trigger destructive rollback.
 
 ## Phase gate
 
 - [x] [Agent] All three Herdr actions are available through narrow typed APIs.
 - [x] [Agent] Socket and CLI action tests pass without a live Herdr session.
 - [x] [Agent] Formatting, Clippy, and tests pass.
-- [ ] [User confirmation] The action safety review is approved.
+- [x] [User confirmation] The action safety review is approved.
 
 ## Out of scope
 
