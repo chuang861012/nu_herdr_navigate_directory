@@ -38,20 +38,19 @@ but no later phase may be declared complete before all dependency gates pass.
 | Phase | Document                                                | System design sections | Primary deliverable                                | User involvement                            | Status                                  |
 | ----- | ------------------------------------------------------- | ---------------------- | -------------------------------------------------- | ------------------------------------------- | --------------------------------------- |
 | 1     | [Foundation](phase-01-foundation.md)                    | 4–6, 13, 17            | Compilable Rust/Nushell plugin skeleton            | Dependency and boundary review              | Complete                                |
-| 2     | [Domain and paths](phase-02-domain-paths.md)            | 7, 9–12                | Canonical path model and pure decision engine      | Decision-table review                       | Implemented; awaiting user confirmation |
-| 3     | [Herdr inspection](phase-03-herdr-inspection.md)        | 5, 8–10, 14–15, 17–18  | Typed read-only Herdr integration                  | Inspection evidence review                  | Not started                |
-| 4     | [Herdr actions](phase-04-herdr-actions.md)              | 12, 14–18              | Exact pane focus and create transports             | Action safety review                        | Not started                |
-| 5     | [`hcd` orchestration](phase-05-hcd-orchestration.md)    | 6–17, 19               | Complete command, retry, cancellation, and errors  | Behavior review and optional manual E2E     | Not started                |
-| 6     | [Quality, CI, and distribution](phase-06-quality-ci.md) | 19–21                  | Full local gates, GitHub Actions, and install docs | Push/PR checks and release-readiness review | Not started                |
+| 2     | [Domain and paths](phase-02-domain-paths.md)            | 7, 9–12                | Canonical path model and pure decision engine      | Decision-table review                       | Complete                                |
+| 3     | [Herdr inspection](phase-03-herdr-inspection.md)        | 5, 8–10, 14–15, 17–18  | Typed read-only Herdr integration                  | Inspection evidence review                  | Not started                             |
+| 4     | [Herdr actions](phase-04-herdr-actions.md)              | 12, 14–18              | Exact pane focus and create transports             | Action safety review                        | Not started                             |
+| 5     | [`hcd` orchestration](phase-05-hcd-orchestration.md)    | 6–17, 19               | Complete command, retry, cancellation, and errors  | Behavior review and optional manual E2E     | Not started                             |
+| 6     | [Quality, CI, and distribution](phase-06-quality-ci.md) | 19–21                  | Full local gates, GitHub Actions, and install docs | Push/PR checks and release-readiness review | Not started                             |
 
-Current progress: Phase 1 is complete. Phase 2 implementation is ready for
-the decision-table review; user confirmation is still required.
+Current progress: Phase 1 and Phase 2 are complete. Phase 3 has not started.
 
 ## User action and confirmation summary
 
 - [x] [User confirmation] Phase 1: approve the dependency set, Rust/Nushell
       versions, command signature, and module boundaries.
-- [ ] [User confirmation] Phase 2: review the decision-table evidence against
+- [x] [User confirmation] Phase 2: review the decision-table evidence against
       the complete navigation tree.
 - [ ] [User confirmation] Phase 3: confirm that inspection remains read-only,
       fail-closed, and scoped to the caller's live Herdr session.

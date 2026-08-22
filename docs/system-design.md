@@ -6,9 +6,9 @@ Last updated: 2026-08-22
 
 Planned initial version: 0.1.0
 
-Implementation status: Phase 1 plugin foundation is complete. Phase 2 domain
-path model and pure decision engine are implemented and await user confirmation.
-Phases 3–6 have not started. The staged delivery plan is defined in
+Implementation status: Phase 1 plugin foundation and Phase 2 domain path
+model and decision engine are complete. Phases 3–6 have not started. The
+staged delivery plan is defined in
 [Implementation Phases](phases/README.md). This document remains the
 authoritative requirements and architecture specification; phase files define
 execution order and acceptance gates but must not override this document.
