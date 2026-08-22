@@ -289,13 +289,15 @@ mod tests {
         let halt = || Instant::now() >= deadline;
         let started = Instant::now();
         let error = run_bounded(&halt, || {
-            thread::sleep(Duration::from_millis(200));
+            thread::sleep(Duration::from_millis(500));
             1
         })
         .unwrap_err();
         assert!(matches!(error, RunError::Interrupted));
+        // Hosted macOS timers can overshoot a 10ms poll by tens of milliseconds.
+        // The bound still proves the helper's 500ms sleep was not waited out.
         assert!(
-            started.elapsed() < Duration::from_millis(80),
+            started.elapsed() < Duration::from_millis(250),
             "bounded wait must return at halt, elapsed {:?}",
             started.elapsed()
         );

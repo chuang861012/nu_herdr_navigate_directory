@@ -326,6 +326,7 @@ mod tests {
         cwd: String,
         env: HashMap<String, Value>,
         interrupted: Arc<AtomicBool>,
+        interrupt_after: Option<Instant>,
         cwd_delay: Duration,
         pwd_delay: Duration,
         env_writes: Arc<Mutex<Vec<(String, String)>>>,
@@ -338,6 +339,7 @@ mod tests {
                 cwd: cwd.to_string(),
                 env: HashMap::new(),
                 interrupted: Arc::new(AtomicBool::new(false)),
+                interrupt_after: None,
                 cwd_delay: Duration::ZERO,
                 pwd_delay: Duration::ZERO,
                 env_writes: Arc::new(Mutex::new(Vec::new())),
@@ -352,7 +354,15 @@ mod tests {
 
     impl CallerEngine for FakeEngine {
         fn interrupted(&self) -> bool {
-            self.interrupted.load(Ordering::Relaxed)
+            if self.interrupted.load(Ordering::Relaxed) {
+                return true;
+            }
+            if self.interrupt_after.is_some_and(|at| Instant::now() >= at) {
+                self.interrupted.store(true, Ordering::Relaxed);
+                true
+            } else {
+                false
+            }
         }
 
         fn current_dir(&self) -> Result<String, Error> {
@@ -455,7 +465,7 @@ mod tests {
         assert!(expired.writes().is_empty());
 
         let mut slow = FakeEngine::outside(cwd_str);
-        slow.cwd_delay = Duration::from_millis(200);
+        slow.cwd_delay = Duration::from_millis(500);
         let started = Instant::now();
         let error = run_hcd(
             &slow,
@@ -464,20 +474,18 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code.as_deref(), Some("herdr_cd::herdr_timeout"));
+        // Hosted macOS timers can overshoot a 10ms poll by tens of milliseconds.
+        // The bound still proves the 500ms lookup was not waited out.
         assert!(
-            started.elapsed() < Duration::from_millis(80),
+            started.elapsed() < Duration::from_millis(250),
             "deadline must abort before the blocking lookup returns, elapsed {:?}",
             started.elapsed()
         );
         assert!(slow.writes().is_empty());
 
         let mut blocked = FakeEngine::outside(cwd_str);
-        blocked.cwd_delay = Duration::from_millis(200);
-        let stop = blocked.interrupted.clone();
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(20));
-            stop.store(true, Ordering::Relaxed);
-        });
+        blocked.cwd_delay = Duration::from_millis(500);
+        blocked.interrupt_after = Some(Instant::now() + Duration::from_millis(30));
         let started = Instant::now();
         let error = run_hcd(
             &blocked,
@@ -490,7 +498,7 @@ mod tests {
             "expected interruption, got {error:?}"
         );
         assert!(
-            started.elapsed() < Duration::from_millis(80),
+            started.elapsed() < Duration::from_millis(250),
             "interruption must abort before the blocking lookup returns, elapsed {:?}",
             started.elapsed()
         );
