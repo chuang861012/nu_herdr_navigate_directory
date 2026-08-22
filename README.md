@@ -181,11 +181,14 @@ plugin use herdr_cd
 remains in the registry. After registration, `hcd <path>` follows the decision
 tree above.
 
-## Non-goals
+## Future work
 
-The initial version does not provide Windows support, configuration, extra `cd`
-forms, directory creation, crates.io or Homebrew packages, or prebuilt
-binaries. See the system design for the complete list.
+- Windows support
+- Configuration
+- Extra `cd` forms
+- Directory creation
+- crates.io or Homebrew packages
+- Prebuilt binaries
 
 ## License
 
