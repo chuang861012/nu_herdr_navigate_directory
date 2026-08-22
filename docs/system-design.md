@@ -6,9 +6,10 @@ Last updated: 2026-08-22
 
 Planned initial version: 0.1.0
 
-Implementation status: Phases 1–3 are complete. Phase 3 provides read-only
-Herdr inspection behind fake-CLI tests; `hcd` still returns not-implemented
-until later phases wire actions and orchestration. Phases 4–6 have not
+Implementation status: Phases 1–3 are complete. Phase 4 implements exact-pane
+focus and focused tab/workspace creation behind typed APIs and fake
+socket/CLI tests. `hcd` still returns not-implemented until phase 5 wires
+orchestration. Phase 4 awaits the action safety review. Phases 5–6 have not
 started. The staged delivery plan is defined in
 [Implementation Phases](phases/README.md). This document remains the
 authoritative requirements and architecture specification; phase files define
@@ -413,6 +414,11 @@ herdr tab create --workspace <workspace-id> --cwd <target> --focus
 herdr workspace create --cwd <target> --focus
 ```
 
+A successful `tab create` response uses result type `tab_created` and includes
+`tab` and `root_pane`. A successful `workspace create` response uses result
+type `workspace_created` and includes `workspace`, `tab`, and `root_pane`.
+Missing created identities are protocol errors.
+
 The exact executable is the validated canonical `HERDR_BIN_PATH`, not a
 literal `herdr` lookup.
 
@@ -454,6 +460,12 @@ checks the request ID, rejects an error response, validates the success result,
 and closes the connection. It does not maintain a long-lived connection or
 subscribe to events.
 
+Herdr 0.8.2 accepts `pane.focus` with a required `params.pane_id` and returns
+result type `pane_info` for the focused pane. A missing pane is reported as
+`pane_not_found`. The public CLI still only exposes directional
+`pane focus --direction`, so exact focus never uses the CLI and never falls
+back to tab or workspace focus.
+
 Before connecting, `HERDR_SOCKET_PATH` must be absolute, resolve to an existing
 Unix socket rather than a regular file, and be owned by the effective user.
 
@@ -485,8 +497,9 @@ protocol error.
 Herdr does not expose an atomic find-or-create-by-cwd operation. `hcd` therefore
 uses one bounded recomputation:
 
-- if exact-pane focus or inspection reports `not_found`, refresh the live
-  caller and snapshot and recompute once;
+- if exact-pane focus or inspection reports `not_found` or a resource-specific
+  `*_not_found` code such as `pane_not_found`, refresh the live caller and
+  snapshot and recompute once;
 - immediately before a create action, refresh and recompute once to avoid a
   common duplicate-creation race;
 - never retry more than once and never exceed the total deadline.

@@ -1,15 +1,17 @@
-//! Herdr binary selection, CLI transport, JSON protocol, and read-only inspection.
+//! Herdr binary selection, CLI/socket transport, inspection, and typed actions.
 //!
-//! This module is the side-effect boundary for talking to Herdr. Focus and create
-//! actions are added in a later phase. Transport JSON types do not leak into
-//! `domain` or `command`.
+//! This module is the side-effect boundary for talking to Herdr. Transport JSON
+//! types do not leak into `domain` or `command`.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
 mod cli;
 mod context;
+mod create;
+mod focus;
 mod inspect;
 mod protocol;
+mod socket;
 
 #[cfg(test)]
 mod test_support;
@@ -18,6 +20,10 @@ mod test_support;
 pub(crate) use cli::{READ_TIMEOUT, RunError};
 #[allow(unused_imports)]
 pub(crate) use context::{EnvValue, HerdrMode, InsideContext, classify_herdr_env, inside_context};
+#[allow(unused_imports)]
+pub(crate) use create::{CreatedTab, CreatedWorkspace, create_tab, create_workspace};
+#[allow(unused_imports)]
+pub(crate) use focus::{FocusResult, focus_pane};
 #[allow(unused_imports)]
 pub(crate) use inspect::{
     LiveCaller, ProcessInspection, SessionInspection, apply_shell_evidence,

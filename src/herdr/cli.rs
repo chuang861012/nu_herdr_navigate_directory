@@ -9,13 +9,18 @@ use std::time::{Duration, Instant};
 use super::context::InsideContext;
 use crate::domain::Error;
 
-/// Per-read-operation deadline for snapshot, caller lookup, and pane inspection.
+/// Per-read-operation deadline for snapshot, caller lookup, pane inspection, and focus.
 pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Tab or workspace creation deadline.
+pub(crate) const CREATE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Maximum accepted CLI stdout or stderr payload.
 pub(crate) const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
-const POLL_INTERVAL: Duration = Duration::from_millis(10);
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+pub(crate) const START_FAILED: &str = "failed to start the Herdr command";
 
 /// CLI runner failure, including interruption that must surface as Nushell's interrupt error.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +65,7 @@ pub(crate) fn run(
 
     let mut child = command
         .spawn()
-        .map_err(|_| Error::herdr_transport("failed to start the Herdr inspection command"))?;
+        .map_err(|_| Error::herdr_transport(START_FAILED))?;
 
     let stdout = child
         .stdout
@@ -85,7 +90,7 @@ pub(crate) fn run(
         }
         if Instant::now() >= deadline {
             terminate(&mut child);
-            return Err(Error::herdr_timeout("Herdr inspection timed out").into());
+            return Err(Error::herdr_timeout("Herdr command timed out").into());
         }
         if status.is_none() {
             match child.try_wait() {
@@ -93,10 +98,9 @@ pub(crate) fn run(
                 Ok(None) => {}
                 Err(_) => {
                     terminate(&mut child);
-                    return Err(Error::herdr_transport(
-                        "failed to wait for the Herdr inspection command",
-                    )
-                    .into());
+                    return Err(
+                        Error::herdr_transport("failed to wait for the Herdr command").into(),
+                    );
                 }
             }
         }
@@ -200,7 +204,7 @@ fn take_reader(
             Ok(())
         }
         Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
-            Err(Error::herdr_transport("failed to read the Herdr inspection command output").into())
+            Err(Error::herdr_transport("failed to read the Herdr command output").into())
         }
         Err(mpsc::TryRecvError::Empty) => Ok(()),
     }

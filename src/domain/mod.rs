@@ -97,7 +97,6 @@ impl Error {
         Self::new(ErrorKind::HerdrProtocol, message)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn herdr_action(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::HerdrAction, message)
     }

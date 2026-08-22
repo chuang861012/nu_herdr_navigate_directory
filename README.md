@@ -5,9 +5,8 @@ directory-navigation command that cooperates with Herdr workspaces, tabs, and
 panes.
 
 The current tree is a compilable plugin plus a pure domain path model, decision
-engine, and read-only Herdr inspection layer. `hcd` still returns a
-not-implemented error. Herdr actions and command orchestration are not
-implemented yet.
+engine, read-only Herdr inspection, and typed Herdr focus/create actions. `hcd`
+still returns a not-implemented error until orchestration is wired.
 
 See [the system design](docs/system-design.md) for the agreed behavior,
 architecture, constraints, and verification strategy.
@@ -56,8 +55,9 @@ plugin use herdr_cd
 ```
 
 `plugin add` is not required again after a Nushell restart if the plugin
-remains in the registry. `hcd` currently returns a not-implemented error;
-inspection is implemented and covered by fake-CLI tests.
+remains in the registry. `hcd` currently returns a not-implemented error; inspection, exact-pane focus,
+and focused create are implemented and covered by fake-CLI and fake-socket
+tests.
 
 ## License
 
