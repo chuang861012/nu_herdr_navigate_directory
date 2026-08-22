@@ -35,18 +35,18 @@ but no later phase may be declared complete before all dependency gates pass.
 
 ## Phase index
 
-| Phase | Document                                                | System design sections | Primary deliverable                                | User involvement                            | Status                                |
-| ----- | ------------------------------------------------------- | ---------------------- | -------------------------------------------------- | ------------------------------------------- | ------------------------------------- |
-| 1     | [Foundation](phase-01-foundation.md)                    | 4–6, 13, 17            | Compilable Rust/Nushell plugin skeleton            | Dependency and boundary review              | Complete                              |
-| 2     | [Domain and paths](phase-02-domain-paths.md)            | 7, 9–12                | Canonical path model and pure decision engine      | Decision-table review                       | Complete                              |
-| 3     | [Herdr inspection](phase-03-herdr-inspection.md)        | 5, 8–10, 14–15, 17–18  | Typed read-only Herdr integration                  | Inspection evidence review                  | Complete                              |
-| 4     | [Herdr actions](phase-04-herdr-actions.md)              | 12, 14–18              | Exact pane focus and create transports             | Action safety review                        | Complete                              |
-| 5     | [`hcd` orchestration](phase-05-hcd-orchestration.md)    | 6–17, 19               | Complete command, retry, cancellation, and errors  | Behavior review and optional manual E2E     | Complete                              |
-| 6     | [Quality, CI, and distribution](phase-06-quality-ci.md) | 19–21                  | Full local gates, GitHub Actions, and install docs | Push/PR checks and release-readiness review | Awaiting user confirmation            |
+| Phase | Document                                                | System design sections | Primary deliverable                                | User involvement                            | Status                     |
+| ----- | ------------------------------------------------------- | ---------------------- | -------------------------------------------------- | ------------------------------------------- | -------------------------- |
+| 1     | [Foundation](phase-01-foundation.md)                    | 4–6, 13, 17            | Compilable Rust/Nushell plugin skeleton            | Dependency and boundary review              | Complete                   |
+| 2     | [Domain and paths](phase-02-domain-paths.md)            | 7, 9–12                | Canonical path model and pure decision engine      | Decision-table review                       | Complete                   |
+| 3     | [Herdr inspection](phase-03-herdr-inspection.md)        | 5, 8–10, 14–15, 17–18  | Typed read-only Herdr integration                  | Inspection evidence review                  | Complete                   |
+| 4     | [Herdr actions](phase-04-herdr-actions.md)              | 12, 14–18              | Exact pane focus and create transports             | Action safety review                        | Complete                   |
+| 5     | [`hcd` orchestration](phase-05-hcd-orchestration.md)    | 6–17, 19               | Complete command, retry, cancellation, and errors  | Behavior review and optional manual E2E     | Complete                   |
+| 6     | [Quality, CI, and distribution](phase-06-quality-ci.md) | 19–21                  | Full local gates, GitHub Actions, and install docs | Push/PR checks and release-readiness review | Complete                   |
 
-Current progress: Phases 1–5 are complete. Phase 6 local quality, CI, and
-source-install documentation are implemented. GitHub-hosted verification and
-0.1.0 source-readiness approval remain user gates.
+Current progress: Phases 1–6 are complete. Version 0.1.0 is approved for
+source-distribution review. Publishing to any registry remains a separate
+future decision.
 
 ## User action and confirmation summary
 
@@ -60,9 +60,9 @@ source-install documentation are implemented. GitHub-hosted verification and
       timeout handling, and absence of destructive rollback.
 - [x] [User confirmation] Phase 5: review complete command behavior and any
       optional real Nushell/Herdr end-to-end evidence.
-- [ ] [User action] Phase 6: push a feature branch and open or update a pull
+- [x] [User action] Phase 6: push a feature branch and open or update a pull
       request when GitHub-hosted CI verification is desired. Agents never push.
-- [ ] [User confirmation] Phase 6: approve the CI results, installation
+- [x] [User confirmation] Phase 6: approve the CI results, installation
       documentation, and 0.1.0 source-distribution readiness.
 
 ## Completion rule
