@@ -35,8 +35,8 @@ resource.
       explicitly pass `HERDR_SOCKET_PATH`, and remove `HERDR_SESSION`.
 - [x] [Agent] Enforce the 2-second read-operation timeout, 4 MiB response cap,
       process termination/reaping, and interruption hook.
-- [x] [Agent] Sanitize bounded error details without exposing environments,
-      socket paths, or complete responses.
+- [x] [Agent] Sanitize bounded error details without dumping environments or
+      complete responses; the local Herdr socket path may appear.
 
 ### 3. Typed inspection operations
 

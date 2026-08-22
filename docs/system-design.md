@@ -520,9 +520,10 @@ API.
 
 Path errors label the path argument span. Context and Herdr errors label the
 command head span. Errors may include the operation, sanitized Herdr error
-code/message, target path, and relevant resource ID. They do not dump an
-environment, socket path, complete stdout/stderr, or session snapshot.
-Untrusted error text is length-limited and stripped of control characters.
+code/message, target path, relevant resource ID, and local Herdr socket path.
+The socket path is not treated as a secret. Errors do not dump an environment,
+complete stdout/stderr, or a session snapshot. Untrusted error text is
+length-limited and stripped of control characters.
 
 Inside Herdr, any context, query, protocol, focus, or create failure is an
 error. It never silently falls back to ordinary directory change. Outside
