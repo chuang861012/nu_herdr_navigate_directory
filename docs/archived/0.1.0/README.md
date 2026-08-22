@@ -1,9 +1,11 @@
 # Implementation Phases
 
-This directory divides the [System Design](../system-design.md) into
+This directory is an archived historical record of the 0.1.0 delivery. It is
+read-only. Do not edit these files.
+
+This directory divided the [System Design](../../system-design.md) into
 independently reviewable implementation phases. The system design is the sole
-authority for product behavior and architecture. If a phase document conflicts
-with it, correct the phase document before implementing the conflicting work.
+authority for product behavior and architecture.
 
 ## Responsibility labels
 

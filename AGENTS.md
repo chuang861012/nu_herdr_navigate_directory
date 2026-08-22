@@ -9,32 +9,13 @@
 
 - Treat `docs/system-design.md` as the authoritative product and architecture
   specification.
-- Follow the phase order and gates in `docs/phases/README.md` and the applicable
-  phase file when planning or implementing work.
-- If a phase file conflicts with the system design, the system design wins.
-  Correct the phase file before implementing the conflicting work.
+- Treat `docs/archived/` as a historical record only. It is read-only; do not
+  edit files there, including the completed 0.1.0 implementation phases.
 - Read the relevant sections of the system design before planning or changing
   behavior.
 - Do not silently diverge from an approved design decision. Update the design
   document in the same change when an implementation decision changes the
   specified behavior, compatibility boundary, or security property.
-- Keep the initial scope deliberately small. Do not add configuration,
-  commands, platforms, transports, or distribution channels that the design
-  lists as non-goals without explicit approval.
-
-## Phase responsibility labels
-
-Phase checklist items use these labels:
-
-- `[Agent]`: an agent may implement and verify the item locally.
-- `[User action]`: the user must perform the external, account, publishing, or
-  local trust-boundary operation unless it is explicitly delegated.
-- `[User confirmation]`: an agent may prepare the result and evidence, but the
-  user must approve the phase gate before work advances to the next phase.
-
-Do not mark a phase complete while a required user action or confirmation is
-unfinished. Later-phase tests may be prepared early, but a later phase must not
-be declared complete before its dependency gates pass.
 
 ## Implementation
 
@@ -62,8 +43,6 @@ be declared complete before its dependency gates pass.
   test commands described in `docs/system-design.md`.
 - Do not add repetitive tests that merely restate the same branch without
   increasing confidence.
-- Mark phase checklist items complete only after the implementation and the
-  stated verification have actually passed.
 
 ## Repository hygiene
 
@@ -76,4 +55,4 @@ be declared complete before its dependency gates pass.
 ## Commit & Pull Request Guidelines
 
 - Before implementation, run `git branch --show-current`. If it reports `main`, create or switch to a focused feature branch before changing code, tests, configuration, or migrations. Never commit implementation work directly to `main`.
-- History uses Conventional Commit subjects such as `docs: add system design`. Keep commits focused with an imperative `<type>: <summary>`. PRs should describe scope, list verification commands, and include screenshots for UI changes. Do not update archived pre-release progress files.
+- History uses Conventional Commit subjects such as `docs: add system design`. Keep commits focused with an imperative `<type>: <summary>`. PRs should describe scope, list verification commands, and include screenshots for UI changes. Do not edit `docs/archived/` or other archived pre-release progress files.

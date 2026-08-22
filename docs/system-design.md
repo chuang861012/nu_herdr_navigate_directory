@@ -9,11 +9,11 @@ Planned initial version: 0.1.0
 Implementation status: Phases 1–6 are complete. The 0.1.0 source tree includes
 the complete `hcd` command, local quality gates, a non-deploying Linux/macOS
 GitHub Actions workflow, and source-install documentation. Publishing to any
-registry remains a separate future decision. The staged delivery plan is
-defined in [Implementation Phases](phases/README.md). This document remains
-the authoritative requirements and architecture specification; phase files
-define execution order and acceptance gates but must not override this
-document.
+registry remains a separate future decision. The completed 0.1.0 staged
+delivery record is archived in
+[Implementation Phases](archived/0.1.0/README.md). That archive is a historical
+record and must not be edited. This document remains the authoritative
+requirements and architecture specification.
 
 ## 1. Overview
 
@@ -677,7 +677,7 @@ new compatibility review before this design baseline is revised.
 
 ## 23. Implementation sequence
 
-Implementation is divided into six independently reviewable phases:
+Implementation was divided into six independently reviewable phases:
 
 1. project and plugin foundation;
 2. path model and pure decision engine;
@@ -686,6 +686,8 @@ Implementation is divided into six independently reviewable phases:
 5. complete `hcd` orchestration and resilience;
 6. quality gates, CI, and source distribution readiness.
 
-Each phase has explicit prerequisites, work items, verification, a user
-confirmation gate, and out-of-scope boundaries. The phase dependency graph and
-current status are maintained in [Implementation Phases](phases/README.md).
+Each phase had explicit prerequisites, work items, verification, a user
+confirmation gate, and out-of-scope boundaries. The completed 0.1.0 phase
+dependency graph and status are archived in
+[Implementation Phases](archived/0.1.0/README.md). That archive is a historical
+record and must not be edited.
