@@ -430,6 +430,7 @@ mod tests {
             stdout: json.as_bytes().to_vec(),
             stderr: Vec::new(),
             status: std::os::unix::process::ExitStatusExt::from_raw(0),
+            secrets: Vec::new(),
         };
         let CommandResult::Ok(raw) = parse_snapshot(&output).unwrap() else {
             panic!("snapshot");
@@ -556,6 +557,7 @@ esac
             stdout: json.into_bytes(),
             stderr: Vec::new(),
             status: std::os::unix::process::ExitStatusExt::from_raw(0),
+            secrets: Vec::new(),
         };
         let CommandResult::Ok(raw) = parse_snapshot(&output).unwrap() else {
             panic!("snapshot");
@@ -708,6 +710,7 @@ printf '{"id":"x","result":{"type":"pane_process_info","process_info":{"pane_id"
             stdout: json.into_bytes(),
             stderr: Vec::new(),
             status: std::os::unix::process::ExitStatusExt::from_raw(0),
+            secrets: Vec::new(),
         };
         let CommandResult::Ok(raw) = parse_snapshot(&output).unwrap() else {
             panic!("snapshot");
@@ -802,6 +805,7 @@ printf '{"id":"x","result":{"type":"pane_process_info","process_info":{"pane_id"
             stdout: json.into_bytes(),
             stderr: Vec::new(),
             status: std::os::unix::process::ExitStatusExt::from_raw(0),
+            secrets: Vec::new(),
         };
         let CommandResult::Ok(raw) = parse_snapshot(&output).unwrap() else {
             panic!("snapshot");

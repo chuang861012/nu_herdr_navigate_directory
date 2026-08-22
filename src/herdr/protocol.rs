@@ -3,7 +3,6 @@
 use serde::Deserialize;
 
 use super::cli::{CliOutput, RunError};
-use super::sanitize_detail;
 use crate::domain::Error;
 
 pub(crate) const MIN_PROTOCOL: u32 = 20;
@@ -213,10 +212,10 @@ fn parse_typed<T>(
         if error.code == "not_found" {
             return Ok(CommandResult::NotFound {
                 code: error.code,
-                message: sanitize_detail(error.message.as_deref().unwrap_or("not found")),
+                message: sanitize_output(output, error.message.as_deref().unwrap_or("not found")),
             });
         }
-        return Err(server_error(operation, &error).into());
+        return Err(server_error(operation, &error, output).into());
     }
 
     if !output.status.success() {
@@ -232,7 +231,10 @@ fn parse_typed<T>(
     if result.kind != expected_kind {
         return Err(protocol(
             operation,
-            &format!("unexpected result kind {}", sanitize_detail(&result.kind)),
+            &format!(
+                "unexpected result kind {}",
+                sanitize_output(output, &result.kind)
+            ),
         )
         .into());
     }
@@ -275,12 +277,12 @@ fn protocol(operation: &str, detail: &str) -> Error {
     Error::herdr_protocol(format!("{operation}: {detail}"))
 }
 
-fn server_error(operation: &str, error: &ErrorBody) -> Error {
-    let code = sanitize_detail(&error.code);
+fn server_error(operation: &str, error: &ErrorBody, output: &CliOutput) -> Error {
+    let code = sanitize_output(output, &error.code);
     let message = error
         .message
         .as_deref()
-        .map(sanitize_detail)
+        .map(|message| sanitize_output(output, message))
         .filter(|message| !message.is_empty());
     match message {
         Some(message) => Error::herdr_protocol(format!("{operation} failed ({code}: {message})")),
@@ -292,8 +294,12 @@ fn failed_status(operation: &str, output: &CliOutput) -> Error {
     let code = output.status.code().unwrap_or(-1);
     Error::herdr_transport(format!(
         "{operation} exited with status {code}: {}",
-        super::cli::utf8_lossy_sanitized(&output.stderr)
+        super::cli::utf8_lossy_sanitized(&output.stderr, &output.secrets)
     ))
+}
+
+fn sanitize_output(output: &CliOutput, text: &str) -> String {
+    super::sanitize_untrusted(text, &output.secrets)
 }
 
 #[cfg(test)]
@@ -308,6 +314,10 @@ mod tests {
     use std::process::ExitStatus;
 
     fn output(ok: bool, body: &str) -> CliOutput {
+        output_with_secrets(ok, body, Vec::new())
+    }
+
+    fn output_with_secrets(ok: bool, body: &str, secrets: Vec<String>) -> CliOutput {
         CliOutput {
             stdout: if ok {
                 body.as_bytes().to_vec()
@@ -324,6 +334,7 @@ mod tests {
             } else {
                 ExitStatus::from_raw(256)
             },
+            secrets,
         }
     }
 
@@ -439,6 +450,31 @@ mod tests {
         match err {
             crate::herdr::cli::RunError::Failed(error) => {
                 assert_eq!(error.kind(), ErrorKind::HerdrProtocol)
+            }
+            crate::herdr::cli::RunError::Interrupted => panic!("unexpected interrupt"),
+        }
+    }
+
+    #[test]
+    fn error_details_redact_socket_paths_and_environment() {
+        let stderr = "cannot connect to /tmp/nu-plugin-herdr-cd.sock HERDR_EXTRA=keep";
+        let err = parse_snapshot(&output(false, stderr)).unwrap_err();
+        match err {
+            crate::herdr::cli::RunError::Failed(error) => {
+                assert!(!error.message().contains("/tmp/nu-plugin-herdr-cd.sock"));
+                assert!(!error.message().contains("HERDR_EXTRA=keep"));
+                assert!(error.message().contains("<redacted>"));
+            }
+            crate::herdr::cli::RunError::Interrupted => panic!("unexpected interrupt"),
+        }
+
+        let json = r#"{"id":"x","error":{"code":"io","message":"connect /run/herdr failed"}}"#;
+        let err = parse_snapshot(&output_with_secrets(false, json, vec!["/run/herdr".into()]))
+            .unwrap_err();
+        match err {
+            crate::herdr::cli::RunError::Failed(error) => {
+                assert!(!error.message().contains("/run/herdr"));
+                assert!(error.message().contains("<redacted>"));
             }
             crate::herdr::cli::RunError::Interrupted => panic!("unexpected interrupt"),
         }
