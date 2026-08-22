@@ -204,6 +204,9 @@ fn parse_typed<T>(
         }
     };
 
+    if envelope.id.as_deref().is_none_or(str::is_empty) {
+        return Err(protocol(operation, "missing response id").into());
+    }
     if envelope.result.is_some() && envelope.error.is_some() {
         return Err(protocol(operation, "response includes both result and error").into());
     }
@@ -225,9 +228,6 @@ fn parse_typed<T>(
     let Some(result) = envelope.result else {
         return Err(protocol(operation, "missing result").into());
     };
-    if envelope.id.as_deref().is_some_and(str::is_empty) {
-        return Err(protocol(operation, "missing response id").into());
-    }
     if result.kind != expected_kind {
         return Err(protocol(
             operation,
@@ -428,6 +428,29 @@ mod tests {
         match err {
             crate::herdr::cli::RunError::Failed(error) => {
                 assert!(error.message().contains("unexpected result kind"))
+            }
+            crate::herdr::cli::RunError::Interrupted => panic!("unexpected interrupt"),
+        }
+    }
+
+    #[test]
+    fn missing_envelope_id_is_a_protocol_error() {
+        let success = r#"{"result":{"type":"session_snapshot","snapshot":{"version":"0.8.2","protocol":20,"workspaces":[],"tabs":[],"panes":[],"layouts":[]}}}"#;
+        let err = parse_snapshot(&output(true, success)).unwrap_err();
+        match err {
+            crate::herdr::cli::RunError::Failed(error) => {
+                assert_eq!(error.kind(), ErrorKind::HerdrProtocol);
+                assert!(error.message().contains("missing response id"));
+            }
+            crate::herdr::cli::RunError::Interrupted => panic!("unexpected interrupt"),
+        }
+
+        let error = r#"{"error":{"code":"not_found","message":"pane not found"}}"#;
+        let err = parse_process_info(&output(false, error)).unwrap_err();
+        match err {
+            crate::herdr::cli::RunError::Failed(failed) => {
+                assert_eq!(failed.kind(), ErrorKind::HerdrProtocol);
+                assert!(failed.message().contains("missing response id"));
             }
             crate::herdr::cli::RunError::Interrupted => panic!("unexpected interrupt"),
         }
