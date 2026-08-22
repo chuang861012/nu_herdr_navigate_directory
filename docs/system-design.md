@@ -6,15 +6,14 @@ Last updated: 2026-08-23
 
 Planned initial version: 0.1.0
 
-Implementation status: Phases 1–5 are complete. Phase 5 wires the complete
-`hcd` inspect-decide-act loop, including bounded recomputation, the
-10-second total deadline, interruption, structured errors, and fake
-transport tests. Successful calls return `nothing`; only `ChangeDirectory`
-updates the caller's `$env.PWD`. Phase 6 has not started. The staged
-delivery plan is defined in [Implementation Phases](phases/README.md). This
-document remains the authoritative requirements and architecture
-specification; phase files define execution order and acceptance gates but
-must not override this document.
+Implementation status: Phases 1–6 are complete. The 0.1.0 source tree includes
+the complete `hcd` command, local quality gates, a non-deploying Linux/macOS
+GitHub Actions workflow, and source-install documentation. Publishing to any
+registry remains a separate future decision. The staged delivery plan is
+defined in [Implementation Phases](phases/README.md). This document remains
+the authoritative requirements and architecture specification; phase files
+define execution order and acceptance gates but must not override this
+document.
 
 ## 1. Overview
 
@@ -636,12 +635,14 @@ depend on a live terminal multiplexer session.
 
 ## 20. CI policy
 
-The future GitHub Actions workflow will:
+The GitHub Actions workflow in `.github/workflows/ci.yml` will:
 
 - build and test on Linux and macOS;
 - run `cargo fmt --check` on Linux;
 - run `cargo clippy --all-targets --all-features -- -D warnings` on Linux;
 - validate the declared minimum Rust version and latest stable Rust;
+- keep default workflow permissions read-only and omit deployment,
+  publishing, and release-upload steps;
 - omit Windows jobs until Windows becomes a supported platform by an explicit
   design decision.
 
