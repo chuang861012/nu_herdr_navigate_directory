@@ -9,52 +9,52 @@ repository state from an agent environment.
 
 ## Prerequisites
 
-- [ ] [Agent] Phase 5 gate has passed.
-- [ ] [Agent] Re-read system-design sections 19–21.
-- [ ] [Agent] Confirm the working tree and branch before changing CI or release
+- [x] [Agent] Phase 5 gate has passed.
+- [x] [Agent] Re-read system-design sections 19–21.
+- [x] [Agent] Confirm the working tree and branch before changing CI or release
   documentation, and preserve unrelated user changes.
 
 ## Work items
 
 ### 1. Repository-wide local gate
 
-- [ ] [Agent] Run `cargo fmt --check`.
-- [ ] [Agent] Run
+- [x] [Agent] Run `cargo fmt --check`.
+- [x] [Agent] Run
   `cargo clippy --all-targets --all-features -- -D warnings`.
-- [ ] [Agent] Run the full test suite without an installed or running Herdr.
-- [ ] [Agent] Build and test with the declared minimum Rust version and latest
+- [x] [Agent] Run the full test suite without an installed or running Herdr.
+- [x] [Agent] Build and test with the declared minimum Rust version and latest
   stable Rust where locally practical.
-- [ ] [Agent] Verify `cargo install --path .` from a clean local target path
+- [x] [Agent] Verify `cargo install --path .` from a clean local target path
   without mutating the user's global Cargo or Nushell configuration.
 
 ### 2. GitHub Actions
 
-- [ ] [Agent] Add build and test jobs for Linux and macOS.
-- [ ] [Agent] Run formatting and warning-denied Clippy on Linux.
-- [ ] [Agent] Verify the declared minimum Rust version and latest stable Rust.
-- [ ] [Agent] Keep workflow permissions read-only by default and do not add
+- [x] [Agent] Add build and test jobs for Linux and macOS.
+- [x] [Agent] Run formatting and warning-denied Clippy on Linux.
+- [x] [Agent] Verify the declared minimum Rust version and latest stable Rust.
+- [x] [Agent] Keep workflow permissions read-only by default and do not add
   deployment, publishing, release-upload, secret, or Windows jobs.
-- [ ] [Agent] Use dependency caching only when it does not weaken lockfile
+- [x] [Agent] Use dependency caching only when it does not weaken lockfile
   reproducibility.
 
 ### 3. Documentation and source-install readiness
 
-- [ ] [Agent] Update README prerequisites, build, test, local
+- [x] [Agent] Update README prerequisites, build, test, local
   `cargo install --path .`, future `cargo install --git`, and `plugin add`
   instructions to match verified behavior.
-- [ ] [Agent] Document Linux/macOS support, Herdr 0.8.2 minimum, the exact
+- [x] [Agent] Document Linux/macOS support, Herdr 0.8.2 minimum, the exact
   `HERDR_BIN_PATH` requirement, and intentional non-goals.
-- [ ] [Agent] Keep system design, phase status, comments, and user-facing help
+- [x] [Agent] Keep system design, phase status, comments, and user-facing help
   synchronized with implementation reality.
-- [ ] [Agent] Confirm license metadata and the tracked MIT license agree.
+- [x] [Agent] Confirm license metadata and the tracked MIT license agree.
 
 ### 4. Final verification evidence
 
-- [ ] [Agent] Record the exact local verification commands and results in the
+- [x] [Agent] Record the exact local verification commands and results in the
   handoff or pull-request description, not in a committed local report.
-- [ ] [Agent] Review the final diff for unrelated changes, generated artifacts,
+- [x] [Agent] Review the final diff for unrelated changes, generated artifacts,
   secrets, local paths, and accidentally tracked `.agents-local/` content.
-- [ ] [Agent] Confirm no crates.io, Homebrew, prebuilt-binary, deployment, or
+- [x] [Agent] Confirm no crates.io, Homebrew, prebuilt-binary, deployment, or
   auto-publish workflow was introduced.
 
 ## User actions and confirmation
@@ -70,10 +70,10 @@ repository state from an agent environment.
 
 ## Phase gate
 
-- [ ] [Agent] The complete local quality suite passes.
+- [x] [Agent] The complete local quality suite passes.
 - [ ] [User action] Hosted Linux/macOS CI passes when a GitHub pull request is
   part of the chosen delivery workflow.
-- [ ] [Agent] Source installation and plugin-registration documentation matches
+- [x] [Agent] Source installation and plugin-registration documentation matches
   verified commands.
 - [ ] [User confirmation] The final quality and source-readiness review is
   approved.

@@ -42,9 +42,11 @@ but no later phase may be declared complete before all dependency gates pass.
 | 3     | [Herdr inspection](phase-03-herdr-inspection.md)        | 5, 8–10, 14–15, 17–18  | Typed read-only Herdr integration                  | Inspection evidence review                  | Complete                              |
 | 4     | [Herdr actions](phase-04-herdr-actions.md)              | 12, 14–18              | Exact pane focus and create transports             | Action safety review                        | Complete                              |
 | 5     | [`hcd` orchestration](phase-05-hcd-orchestration.md)    | 6–17, 19               | Complete command, retry, cancellation, and errors  | Behavior review and optional manual E2E     | Complete                              |
-| 6     | [Quality, CI, and distribution](phase-06-quality-ci.md) | 19–21                  | Full local gates, GitHub Actions, and install docs | Push/PR checks and release-readiness review | Not started                           |
+| 6     | [Quality, CI, and distribution](phase-06-quality-ci.md) | 19–21                  | Full local gates, GitHub Actions, and install docs | Push/PR checks and release-readiness review | Awaiting user confirmation            |
 
-Current progress: Phases 1–5 are complete. Phase 6 has not started.
+Current progress: Phases 1–5 are complete. Phase 6 local quality, CI, and
+source-install documentation are implemented. GitHub-hosted verification and
+0.1.0 source-readiness approval remain user gates.
 
 ## User action and confirmation summary
 
