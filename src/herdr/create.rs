@@ -105,10 +105,27 @@ pub(crate) fn create_workspace(
 
 fn validate_tab(body: CreatedTabBody, workspace_id: &str) -> Result<CreatedTab, Error> {
     require_id("tab creation", "tab", &body.tab.tab_id)?;
+    require_id("tab creation", "tab workspace", &body.tab.workspace_id)?;
     require_id("tab creation", "root pane", &body.root_pane.pane_id)?;
+    require_id(
+        "tab creation",
+        "root pane workspace",
+        &body.root_pane.workspace_id,
+    )?;
+    require_id("tab creation", "root pane tab", &body.root_pane.tab_id)?;
     if body.tab.workspace_id != workspace_id {
         return Err(Error::herdr_protocol(
             "tab creation: created tab workspace does not match the request",
+        ));
+    }
+    if body.root_pane.workspace_id != workspace_id {
+        return Err(Error::herdr_protocol(
+            "tab creation: created root pane workspace does not match the request",
+        ));
+    }
+    if body.root_pane.tab_id != body.tab.tab_id {
+        return Err(Error::herdr_protocol(
+            "tab creation: created root pane tab does not match the created tab",
         ));
     }
     Ok(CreatedTab {
@@ -124,20 +141,35 @@ fn validate_workspace(body: CreatedWorkspaceBody) -> Result<CreatedWorkspace, Er
         &body.workspace.workspace_id,
     )?;
     require_id("workspace creation", "tab", &body.tab.tab_id)?;
+    require_id(
+        "workspace creation",
+        "tab workspace",
+        &body.tab.workspace_id,
+    )?;
     require_id("workspace creation", "root pane", &body.root_pane.pane_id)?;
+    require_id(
+        "workspace creation",
+        "root pane workspace",
+        &body.root_pane.workspace_id,
+    )?;
+    require_id(
+        "workspace creation",
+        "root pane tab",
+        &body.root_pane.tab_id,
+    )?;
     if body.tab.workspace_id != body.workspace.workspace_id {
         return Err(Error::herdr_protocol(
             "workspace creation: created tab workspace does not match the workspace",
         ));
     }
-    if body
-        .root_pane
-        .workspace_id
-        .as_deref()
-        .is_some_and(|id| id != body.workspace.workspace_id)
-    {
+    if body.root_pane.workspace_id != body.workspace.workspace_id {
         return Err(Error::herdr_protocol(
             "workspace creation: created root pane workspace does not match the workspace",
+        ));
+    }
+    if body.root_pane.tab_id != body.tab.tab_id {
+        return Err(Error::herdr_protocol(
+            "workspace creation: created root pane tab does not match the created tab",
         ));
     }
     Ok(CreatedWorkspace {
@@ -374,6 +406,63 @@ exit 1
                 assert!(!error.message().contains("partially completed"));
             }
             RunError::Interrupted => panic!("unexpected interrupt"),
+        }
+    }
+
+    #[test]
+    fn mismatched_create_identities_are_protocol_errors() {
+        let _cli = lock_cli();
+        let (_cwd_dir, cwd) = cwd_fixture();
+        let dir = TempDir::new("create-mismatch");
+
+        let cases = [
+            (
+                "tab-other-tab",
+                r#"{"id":"cli:tab:create","result":{"type":"tab_created","tab":{"tab_id":"w1:t2","workspace_id":"w1","number":2,"label":"src","focused":true,"pane_count":1,"agent_status":"idle"},"root_pane":{"pane_id":"w1:p3","terminal_id":"t","workspace_id":"w1","tab_id":"w1:t9","focused":true,"agent_status":"idle","revision":1}}}"#,
+                true,
+                "root pane tab does not match",
+            ),
+            (
+                "tab-other-workspace",
+                r#"{"id":"cli:tab:create","result":{"type":"tab_created","tab":{"tab_id":"w1:t2","workspace_id":"w1","number":2,"label":"src","focused":true,"pane_count":1,"agent_status":"idle"},"root_pane":{"pane_id":"w1:p3","terminal_id":"t","workspace_id":"w9","tab_id":"w1:t2","focused":true,"agent_status":"idle","revision":1}}}"#,
+                true,
+                "root pane workspace does not match",
+            ),
+            (
+                "ws-other-tab",
+                r#"{"id":"cli:workspace:create","result":{"type":"workspace_created","workspace":{"workspace_id":"w2","number":2,"label":"other","focused":true,"pane_count":1,"tab_count":1,"active_tab_id":"w2:t1","agent_status":"idle"},"tab":{"tab_id":"w2:t1","workspace_id":"w2","number":1,"label":"main","focused":true,"pane_count":1,"agent_status":"idle"},"root_pane":{"pane_id":"w2:p1","terminal_id":"t","workspace_id":"w2","tab_id":"w2:t9","focused":true,"agent_status":"idle","revision":1}}}"#,
+                false,
+                "root pane tab does not match",
+            ),
+        ];
+
+        for (name, json, is_tab, detail) in cases {
+            let bin = write_executable(
+                dir.path(),
+                name,
+                &format!("#!/bin/sh\nprintf '%s\\n' {json}\n", json = sh_single(json),),
+            );
+            let context = context_for(&bin);
+            let err = if is_tab {
+                create_tab(&context, &WorkspaceId::new("w1"), &cwd, || false).unwrap_err()
+            } else {
+                create_workspace(&context, &cwd, || false).unwrap_err()
+            };
+            match err {
+                RunError::Failed(error) => {
+                    assert_eq!(error.kind(), ErrorKind::HerdrProtocol, "{name}");
+                    assert!(
+                        error.message().contains(detail),
+                        "{name}: expected {detail:?} in {}",
+                        error.message()
+                    );
+                    assert!(
+                        error.message().contains("partially completed"),
+                        "{name}: mismatched identities are ambiguous after dispatch"
+                    );
+                }
+                RunError::Interrupted => panic!("{name}: unexpected interrupt"),
+            }
         }
     }
 

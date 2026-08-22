@@ -2,7 +2,7 @@
 
 mod orchestrate;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::time::Instant;
 
@@ -12,7 +12,42 @@ use nu_protocol::{Category, LabeledError, ShellError, Signature, Span, SyntaxSha
 use crate::domain::{Error, ErrorKind, resolve_paths};
 use crate::herdr::{EnvValue, HerdrMode, RunError, classify_herdr_env, inside_context};
 
-use orchestrate::{Outcome, TOTAL_DEADLINE, orchestrate};
+use orchestrate::{Outcome, TOTAL_DEADLINE, check, orchestrate};
+
+/// Caller-side Nushell engine operations used by one `hcd` invocation.
+trait CallerEngine {
+    fn interrupted(&self) -> bool;
+    fn current_dir(&self) -> Result<String, Error>;
+    fn env_var(&self, name: &str) -> Result<Option<Value>, Error>;
+    fn env_vars(&self) -> Result<HashMap<String, Value>, Error>;
+    fn add_env_var(&self, name: &str, value: Value) -> Result<(), Error>;
+}
+
+impl CallerEngine for EngineInterface {
+    fn interrupted(&self) -> bool {
+        self.signals().interrupted()
+    }
+
+    fn current_dir(&self) -> Result<String, Error> {
+        self.get_current_dir()
+            .map_err(|_| Error::invalid_path("caller working directory is unavailable"))
+    }
+
+    fn env_var(&self, name: &str) -> Result<Option<Value>, Error> {
+        self.get_env_var(name)
+            .map_err(|_| Error::invalid_herdr_context("caller environment is unavailable"))
+    }
+
+    fn env_vars(&self) -> Result<HashMap<String, Value>, Error> {
+        self.get_env_vars()
+            .map_err(|_| Error::invalid_herdr_context("caller environment is unavailable"))
+    }
+
+    fn add_env_var(&self, name: &str, value: Value) -> Result<(), Error> {
+        EngineInterface::add_env_var(self, name, value)
+            .map_err(|_| Error::invalid_path("failed to update the caller working directory"))
+    }
+}
 
 const COMMAND_NAME: &str = "hcd";
 
@@ -61,15 +96,18 @@ impl SimplePluginCommand for Hcd {
         call: &EvaluatedCall,
         _input: &Value,
     ) -> Result<Value, LabeledError> {
-        run_hcd(engine, call)
+        run_hcd(engine, call, Instant::now() + TOTAL_DEADLINE)
     }
 }
 
-fn run_hcd(engine: &EngineInterface, call: &EvaluatedCall) -> Result<Value, LabeledError> {
-    let interrupted = || engine.signals().interrupted();
-    if interrupted() {
-        return Err(interrupt_error(call.head));
-    }
+fn run_hcd(
+    engine: &impl CallerEngine,
+    call: &EvaluatedCall,
+    deadline: Instant,
+) -> Result<Value, LabeledError> {
+    let interrupted = || engine.interrupted();
+    let fail = |error: RunError| map_run_error(error, call);
+    check(&interrupted, deadline).map_err(&fail)?;
     if !platform_is_supported() {
         return Err(labeled_error(
             &Error::unsupported_platform("hcd supports Linux and macOS only"),
@@ -80,36 +118,47 @@ fn run_hcd(engine: &EngineInterface, call: &EvaluatedCall) -> Result<Value, Labe
 
     let target: String = call.req(0)?;
     let path_span = call.nth(0).map(|value| value.span()).unwrap_or(call.head);
-    let caller_cwd = engine.get_current_dir().map_err(|_| {
-        labeled_error(
-            &Error::invalid_path("caller working directory is unavailable"),
-            path_span,
-            call.head,
-        )
-    })?;
-    let home = read_home(engine).map_err(|error| labeled_error(&error, path_span, call.head))?;
-    let paths = resolve_paths(Path::new(&caller_cwd), &target, home.as_deref())
-        .map_err(|error| labeled_error(&error, path_span, call.head))?;
-    let mode =
-        read_herdr_mode(engine).map_err(|error| labeled_error(&error, path_span, call.head))?;
-    let deadline = Instant::now() + TOTAL_DEADLINE;
+    let to_labeled = |error: Error| labeled_error(&error, path_span, call.head);
+
+    check(&interrupted, deadline).map_err(&fail)?;
+    let caller_cwd = engine.current_dir().map_err(&to_labeled)?;
+    check(&interrupted, deadline).map_err(&fail)?;
+    let home = read_home(engine).map_err(&to_labeled)?;
+    check(&interrupted, deadline).map_err(&fail)?;
+    let paths =
+        resolve_paths(Path::new(&caller_cwd), &target, home.as_deref()).map_err(&to_labeled)?;
+    check(&interrupted, deadline).map_err(&fail)?;
+    let mode = read_herdr_mode(engine).map_err(&to_labeled)?;
+    check(&interrupted, deadline).map_err(&fail)?;
 
     match orchestrate(&paths, &mode, &interrupted, deadline) {
-        Ok(Outcome::Silent) => Ok(Value::nothing(call.head)),
-        Ok(Outcome::ChangeDirectory { path }) => {
+        Ok(outcome) => apply_outcome(engine, outcome, call.head, path_span),
+        Err(error) => Err(fail(error)),
+    }
+}
+
+fn apply_outcome(
+    engine: &impl CallerEngine,
+    outcome: Outcome,
+    head: Span,
+    path_span: Span,
+) -> Result<Value, LabeledError> {
+    match outcome {
+        Outcome::Silent => Ok(Value::nothing(head)),
+        Outcome::ChangeDirectory { path } => {
             engine
                 .add_env_var("PWD", Value::string(path.as_str(), path_span))
-                .map_err(|_| {
-                    labeled_error(
-                        &Error::invalid_path("failed to update the caller working directory"),
-                        path_span,
-                        call.head,
-                    )
-                })?;
-            Ok(Value::nothing(call.head))
+                .map_err(|error| labeled_error(&error, path_span, head))?;
+            Ok(Value::nothing(head))
         }
-        Err(RunError::Interrupted) => Err(interrupt_error(call.head)),
-        Err(RunError::Failed(error)) => Err(labeled_error(&error, path_span, call.head)),
+    }
+}
+
+fn map_run_error(error: RunError, call: &EvaluatedCall) -> LabeledError {
+    let path_span = call.nth(0).map(|value| value.span()).unwrap_or(call.head);
+    match error {
+        RunError::Interrupted => interrupt_error(call.head),
+        RunError::Failed(error) => labeled_error(&error, path_span, call.head),
     }
 }
 
@@ -118,19 +167,13 @@ fn platform_is_supported() -> bool {
 }
 
 /// Read Herdr mode from the caller's environment, never from the plugin process.
-fn read_herdr_mode(engine: &EngineInterface) -> Result<HerdrMode, Error> {
-    let herdr_env = engine
-        .get_env_var("HERDR_ENV")
-        .map_err(|_| Error::invalid_herdr_context("caller environment is unavailable"))?
-        .as_ref()
-        .map(nu_value_to_env);
+fn read_herdr_mode(engine: &impl CallerEngine) -> Result<HerdrMode, Error> {
+    let herdr_env = engine.env_var("HERDR_ENV")?.as_ref().map(nu_value_to_env);
     if !classify_herdr_env(herdr_env.as_ref())? {
         return Ok(HerdrMode::Outside);
     }
 
-    let vars = engine
-        .get_env_vars()
-        .map_err(|_| Error::invalid_herdr_context("caller environment is unavailable"))?;
+    let vars = engine.env_vars()?;
     let mut herdr_vars = BTreeMap::new();
     for (key, value) in vars {
         if !key.starts_with("HERDR_") {
@@ -165,13 +208,10 @@ fn read_herdr_mode(engine: &EngineInterface) -> Result<HerdrMode, Error> {
     )?))
 }
 
-fn read_home(engine: &EngineInterface) -> Result<Option<String>, Error> {
-    match engine.get_env_var("HOME") {
-        Ok(Some(Value::String { val, .. })) if !val.is_empty() => Ok(Some(val)),
-        Ok(None) | Ok(Some(_)) => Ok(None),
-        Err(_) => Err(Error::invalid_herdr_context(
-            "caller environment is unavailable",
-        )),
+fn read_home(engine: &impl CallerEngine) -> Result<Option<String>, Error> {
+    match engine.env_var("HOME")? {
+        Some(Value::String { val, .. }) if !val.is_empty() => Ok(Some(val)),
+        _ => Ok(None),
     }
 }
 
@@ -199,13 +239,19 @@ fn labeled_error(error: &Error, path_span: Span, head: Span) -> LabeledError {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMMAND_NAME, Hcd, HerdrCdPlugin, labeled_error, nu_value_to_env, platform_is_supported,
+        COMMAND_NAME, CallerEngine, Hcd, HerdrCdPlugin, apply_outcome, labeled_error,
+        nu_value_to_env, platform_is_supported, run_hcd,
     };
     use crate::PLUGIN_IDENTITY;
-    use crate::domain::{Error, ErrorKind};
+    use crate::command::orchestrate::{Outcome, TOTAL_DEADLINE};
+    use crate::domain::{CanonicalPath, Error, ErrorKind};
     use crate::herdr::{EnvValue, classify_herdr_env};
     use nu_plugin::{EvaluatedCall, Plugin, PluginCommand};
     use nu_protocol::{Span, SyntaxShape, Type, Value};
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn plugin_identity_and_version_match_the_package() {
@@ -254,17 +300,135 @@ mod tests {
         assert!(!signature.allows_unknown_args);
     }
 
+    struct FakeEngine {
+        cwd: String,
+        env: HashMap<String, Value>,
+        interrupted: bool,
+        cwd_delay: Duration,
+        env_writes: RefCell<Vec<(String, String)>>,
+        cwd_calls: RefCell<usize>,
+    }
+
+    impl FakeEngine {
+        fn outside(cwd: &str) -> Self {
+            Self {
+                cwd: cwd.to_string(),
+                env: HashMap::new(),
+                interrupted: false,
+                cwd_delay: Duration::ZERO,
+                env_writes: RefCell::new(Vec::new()),
+                cwd_calls: RefCell::new(0),
+            }
+        }
+    }
+
+    impl CallerEngine for FakeEngine {
+        fn interrupted(&self) -> bool {
+            self.interrupted
+        }
+
+        fn current_dir(&self) -> Result<String, Error> {
+            *self.cwd_calls.borrow_mut() += 1;
+            if !self.cwd_delay.is_zero() {
+                thread::sleep(self.cwd_delay);
+            }
+            Ok(self.cwd.clone())
+        }
+
+        fn env_var(&self, name: &str) -> Result<Option<Value>, Error> {
+            Ok(self.env.get(name).cloned())
+        }
+
+        fn env_vars(&self) -> Result<HashMap<String, Value>, Error> {
+            Ok(self.env.clone())
+        }
+
+        fn add_env_var(&self, name: &str, value: Value) -> Result<(), Error> {
+            let rendered = match &value {
+                Value::String { val, .. } => val.clone(),
+                other => format!("{other:?}"),
+            };
+            self.env_writes
+                .borrow_mut()
+                .push((name.to_string(), rendered));
+            Ok(())
+        }
+    }
+
+    fn test_call(path: &str) -> EvaluatedCall {
+        EvaluatedCall::new(Span::test_data()).with_positional(Value::test_string(path))
+    }
+
     #[test]
     fn successful_output_is_nothing_and_change_directory_is_the_only_pwd_mutation() {
-        use crate::command::orchestrate::Outcome;
-        use crate::domain::CanonicalPath;
+        let cwd = std::env::temp_dir();
+        let cwd_str = cwd.to_str().expect("temp dir is UTF-8");
+        let path = CanonicalPath::directory(&cwd).unwrap();
 
-        assert!(matches!(Outcome::Silent, Outcome::Silent));
-        let path = CanonicalPath::from_parts_for_test("/tmp");
-        assert!(matches!(
+        let silent = FakeEngine::outside(cwd_str);
+        let value = apply_outcome(
+            &silent,
+            Outcome::Silent,
+            Span::test_data(),
+            Span::test_data(),
+        )
+        .unwrap();
+        assert!(value.is_nothing());
+        assert!(silent.env_writes.borrow().is_empty());
+
+        let changed = FakeEngine::outside(cwd_str);
+        let value = apply_outcome(
+            &changed,
             Outcome::ChangeDirectory { path: path.clone() },
-            Outcome::ChangeDirectory { path: updated } if updated == path
-        ));
+            Span::test_data(),
+            Span::test_data(),
+        )
+        .unwrap();
+        assert!(value.is_nothing());
+        assert_eq!(
+            changed.env_writes.borrow().as_slice(),
+            [("PWD".to_string(), path.as_str().to_string())]
+        );
+
+        let engine = FakeEngine::outside(cwd_str);
+        let value = run_hcd(
+            &engine,
+            &test_call(cwd_str),
+            Instant::now() + TOTAL_DEADLINE,
+        )
+        .unwrap();
+        assert!(value.is_nothing());
+        assert_eq!(
+            engine.env_writes.borrow().as_slice(),
+            [("PWD".to_string(), path.as_str().to_string())]
+        );
+    }
+
+    #[test]
+    fn total_deadline_covers_caller_cwd_lookup() {
+        let cwd = std::env::temp_dir();
+        let cwd_str = cwd.to_str().expect("temp dir is UTF-8");
+
+        let expired = FakeEngine::outside(cwd_str);
+        let deadline = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("clock has elapsed at least one second");
+        let error = run_hcd(&expired, &test_call(cwd_str), deadline).unwrap_err();
+        assert_eq!(error.code.as_deref(), Some("herdr_cd::herdr_timeout"));
+        assert_eq!(*expired.cwd_calls.borrow(), 0);
+        assert!(expired.env_writes.borrow().is_empty());
+
+        let mut slow = FakeEngine::outside(cwd_str);
+        slow.cwd_delay = Duration::from_millis(80);
+        let error = run_hcd(
+            &slow,
+            &test_call(cwd_str),
+            Instant::now() + Duration::from_millis(20),
+        )
+        .unwrap_err();
+        assert_eq!(error.code.as_deref(), Some("herdr_cd::herdr_timeout"));
+        assert_eq!(*slow.cwd_calls.borrow(), 1);
+        assert!(slow.env_writes.borrow().is_empty());
     }
 
     #[test]

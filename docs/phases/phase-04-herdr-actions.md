@@ -34,7 +34,9 @@ the complete `hcd` decision loop.
 - [x] [Agent] Implement `workspace create` with canonical target cwd,
       `--focus`, and no label.
 - [x] [Agent] Enforce the 5-second creation timeout and validate returned
-      workspace, tab, and root-pane identities as applicable.
+      workspace, tab, and root-pane identities, including workspace and tab
+      association on the created root pane. Missing or mismatched IDs are
+      protocol errors.
 - [x] [Agent] Do not change the calling pane's cwd during any Herdr action.
 
 ### 3. Failure and safety behavior

@@ -6,7 +6,7 @@ use super::protocol::{
     self, CommandResult, RawAgentStatus, RawPane, RawProcessInfo, RawSnapshot, RawTab, RawWorkspace,
 };
 use crate::domain::{
-    AgentStatus, CanonicalPath, Error, ForegroundProcess, Occupant, Pane, PaneId, Session,
+    AgentStatus, Caller, CanonicalPath, Error, ForegroundProcess, Occupant, Pane, PaneId, Session,
     ShellProcessEvidence, Tab, TabId, Workspace, WorkspaceId,
 };
 
@@ -81,14 +81,31 @@ pub(crate) fn inspect_process(
     }
 }
 
-/// Shell panes whose canonical foreground cwd already equals the target.
+/// Exact-path shell panes the decision tree is allowed to consider.
+///
+/// Other workspaces are included only after they pass root containment, and
+/// only when cwd descent would not already win. The caller's workspace is the
+/// one exact-path search that happens before containment.
 pub(crate) fn exact_path_shell_candidates<'a>(
     session: &'a Session,
+    caller: &Caller,
     target: &CanonicalPath,
 ) -> Vec<&'a Pane> {
+    let inspect_other_workspaces = !caller.cwd.is_strict_ancestor_of(target);
     session
         .workspaces
         .iter()
+        .filter(|workspace| {
+            if workspace.id == caller.workspace_id {
+                true
+            } else {
+                inspect_other_workspaces
+                    && workspace
+                        .root
+                        .as_ref()
+                        .is_some_and(|root| root.contains(target))
+            }
+        })
         .flat_map(|workspace| workspace.tabs.iter())
         .flat_map(|tab| tab.panes.iter())
         .filter(|pane| {
@@ -381,7 +398,7 @@ mod tests {
         exact_path_shell_candidates, inspect_process, inspect_session, map_session,
     };
     use crate::domain::CanonicalPath;
-    use crate::domain::{AgentStatus, Occupant, PaneId, WorkspaceId};
+    use crate::domain::{AgentStatus, Caller, Occupant, PaneId, TabId, WorkspaceId};
     use crate::herdr::context::inside_context;
     use crate::herdr::protocol::{CommandResult, RawSnapshot, parse_snapshot};
     use crate::herdr::test_support::{TempDir, lock_cli, write_executable};
@@ -629,9 +646,150 @@ esac
             Occupant::Agent(AgentStatus::Working)
         ));
         let target = CanonicalPath::directory(root.path()).unwrap();
-        let shells = exact_path_shell_candidates(&session, &target);
+        let caller = Caller {
+            cwd: target.clone(),
+            workspace_id: WorkspaceId::new("w1"),
+            tab_id: TabId::new("w1:t1"),
+            pane_id: PaneId::new("w1:p1"),
+        };
+        let shells = exact_path_shell_candidates(&session, &caller, &target);
         assert_eq!(shells.len(), 1);
         assert_eq!(shells[0].id, PaneId::new("w1:p1"));
+    }
+
+    #[test]
+    fn exact_path_shells_in_non_containing_workspaces_are_not_candidates() {
+        let caller_root = TempDir::new("caller-root");
+        let other_root = TempDir::new("other-root");
+        let target_dir = TempDir::new("unrelated-target");
+        let extra_workspace = format!(
+            r#", {{
+              "workspace_id": "w2",
+              "number": 2,
+              "label": "other",
+              "focused": false,
+              "pane_count": 1,
+              "tab_count": 1,
+              "active_tab_id": "w2:t1",
+              "agent_status": "idle",
+              "worktree": {{
+                "repo_key": "k",
+                "repo_name": "n",
+                "repo_root": "{path}",
+                "checkout_path": "{path}",
+                "is_linked_worktree": true
+              }}
+            }}"#,
+            path = other_root.path().to_str().unwrap()
+        );
+        let extra_tab = r#", {
+          "tab_id": "w2:t1",
+          "workspace_id": "w2",
+          "number": 1,
+          "label": "other",
+          "focused": false,
+          "pane_count": 1,
+          "agent_status": "idle"
+        }"#;
+        let extra_pane = format!(
+            r#", {{
+              "pane_id": "w2:p9",
+              "terminal_id": "term9",
+              "workspace_id": "w2",
+              "tab_id": "w2:t1",
+              "focused": true,
+              "agent_status": "idle",
+              "revision": 1,
+              "cwd": "{other}",
+              "foreground_cwd": "{target}"
+            }}"#,
+            other = other_root.path().to_str().unwrap(),
+            target = target_dir.path().to_str().unwrap()
+        );
+        let json = snapshot_json_extended(
+            caller_root.path().to_str().unwrap(),
+            "",
+            "",
+            &extra_workspace,
+            extra_tab,
+            &extra_pane,
+        );
+        let session = map_session_from_json(&json).unwrap();
+        let target = CanonicalPath::directory(target_dir.path()).unwrap();
+        let caller = Caller {
+            cwd: CanonicalPath::directory(caller_root.path()).unwrap(),
+            workspace_id: WorkspaceId::new("w1"),
+            tab_id: TabId::new("w1:t1"),
+            pane_id: PaneId::new("w1:p1"),
+        };
+        assert!(exact_path_shell_candidates(&session, &caller, &target).is_empty());
+    }
+
+    #[test]
+    fn descendant_targets_do_not_inspect_other_containing_workspaces() {
+        let root = TempDir::new("desc-root");
+        let src = root.path().join("src");
+        fs::create_dir(&src).unwrap();
+        let extra_workspace = format!(
+            r#", {{
+              "workspace_id": "w2",
+              "number": 2,
+              "label": "nested",
+              "focused": false,
+              "pane_count": 1,
+              "tab_count": 1,
+              "active_tab_id": "w2:t1",
+              "agent_status": "idle",
+              "worktree": {{
+                "repo_key": "k",
+                "repo_name": "n",
+                "repo_root": "{path}",
+                "checkout_path": "{path}",
+                "is_linked_worktree": true
+              }}
+            }}"#,
+            path = src.to_str().unwrap()
+        );
+        let extra_tab = r#", {
+          "tab_id": "w2:t1",
+          "workspace_id": "w2",
+          "number": 1,
+          "label": "src",
+          "focused": false,
+          "pane_count": 1,
+          "agent_status": "idle"
+        }"#;
+        let extra_pane = format!(
+            r#", {{
+              "pane_id": "w2:p9",
+              "terminal_id": "term9",
+              "workspace_id": "w2",
+              "tab_id": "w2:t1",
+              "focused": true,
+              "agent_status": "idle",
+              "revision": 1,
+              "cwd": "{src}",
+              "foreground_cwd": "{src}"
+            }}"#,
+            src = src.to_str().unwrap()
+        );
+        let json = snapshot_json_extended(
+            root.path().to_str().unwrap(),
+            "",
+            "",
+            &extra_workspace,
+            extra_tab,
+            &extra_pane,
+        );
+        let session = map_session_from_json(&json).unwrap();
+        let caller = Caller {
+            cwd: CanonicalPath::directory(root.path()).unwrap(),
+            workspace_id: WorkspaceId::new("w1"),
+            tab_id: TabId::new("w1:t1"),
+            pane_id: PaneId::new("w1:p1"),
+        };
+        let target = CanonicalPath::directory(&src).unwrap();
+        assert!(exact_path_shell_candidates(&session, &caller, &target).is_empty());
     }
 
     #[test]

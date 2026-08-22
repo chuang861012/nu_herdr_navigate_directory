@@ -418,7 +418,9 @@ herdr workspace create --cwd <target> --focus
 A successful `tab create` response uses result type `tab_created` and includes
 `tab` and `root_pane`. A successful `workspace create` response uses result
 type `workspace_created` and includes `workspace`, `tab`, and `root_pane`.
-Missing created identities are protocol errors.
+Missing created identities are protocol errors. The created root pane must
+include `pane_id`, `workspace_id`, and `tab_id`, and those IDs must match the
+created tab and workspace.
 
 The exact executable is the validated canonical `HERDR_BIN_PATH`, not a
 literal `herdr` lookup.
@@ -482,9 +484,10 @@ or workspace focus.
 | Tab or workspace creation | 5 seconds each |
 | Entire `hcd` invocation | 10 seconds total |
 
-The total deadline includes the one allowed recomputation. A child process
-that exceeds its limit is terminated and reaped. A socket operation that
-exceeds its limit is closed.
+The total deadline starts at command entry and includes path resolution,
+Herdr context and binary validation, Herdr I/O, and the one allowed
+recomputation. A child process that exceeds its limit is terminated and
+reaped. A socket operation that exceeds its limit is closed.
 
 The command observes `EngineInterface::signals()`. On interruption it
 terminates any live child, closes any socket, skips all remaining actions and

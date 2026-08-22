@@ -178,10 +178,15 @@ pub(crate) struct CreatedTabIdentity {
 }
 
 #[derive(Debug, Deserialize)]
+struct FocusedPaneIdentity {
+    pub pane_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct CreatedPaneIdentity {
     pub pane_id: String,
-    #[serde(default)]
-    pub workspace_id: Option<String>,
+    pub workspace_id: String,
+    pub tab_id: String,
 }
 
 pub(crate) fn parse_snapshot(output: &CliOutput) -> Result<CommandResult<RawSnapshot>, RunError> {
@@ -244,7 +249,7 @@ pub(crate) fn parse_pane_focus_response(
             let pane = fields
                 .get("pane")
                 .ok_or_else(|| protocol("pane focus", "missing pane object"))?;
-            let focused: CreatedPaneIdentity = decode(pane, "pane focus")?;
+            let focused: FocusedPaneIdentity = decode(pane, "pane focus")?;
             if focused.pane_id != pane_id {
                 return Err(protocol("pane focus", "returned a mismatched pane id"));
             }
@@ -668,6 +673,8 @@ mod tests {
         };
         assert_eq!(created.tab.tab_id, "w1:t2");
         assert_eq!(created.root_pane.pane_id, "w1:p3");
+        assert_eq!(created.root_pane.workspace_id, "w1");
+        assert_eq!(created.root_pane.tab_id, "w1:t2");
 
         let workspace = r#"{
           "id": "cli:workspace:create",
@@ -685,6 +692,44 @@ mod tests {
         assert_eq!(created.workspace.workspace_id, "w2");
         assert_eq!(created.tab.tab_id, "w2:t1");
         assert_eq!(created.root_pane.pane_id, "w2:p1");
+        assert_eq!(created.root_pane.workspace_id, "w2");
+        assert_eq!(created.root_pane.tab_id, "w2:t1");
+    }
+
+    #[test]
+    fn create_root_pane_missing_identity_fields_is_protocol_error() {
+        let missing_workspace = r#"{
+          "id": "cli:tab:create",
+          "result": {
+            "type": "tab_created",
+            "tab": {"tab_id":"w1:t2","workspace_id":"w1","number":2,"label":"src","focused":true,"pane_count":1,"agent_status":"idle"},
+            "root_pane": {"pane_id":"w1:p3","terminal_id":"term3","tab_id":"w1:t2","focused":true,"agent_status":"idle","revision":1}
+          }
+        }"#;
+        let err = parse_tab_created(&output(true, missing_workspace)).unwrap_err();
+        match err {
+            crate::herdr::cli::RunError::Failed(error) => {
+                assert_eq!(error.kind(), ErrorKind::HerdrProtocol);
+            }
+            crate::herdr::cli::RunError::Interrupted => panic!("unexpected interrupt"),
+        }
+
+        let missing_tab = r#"{
+          "id": "cli:workspace:create",
+          "result": {
+            "type": "workspace_created",
+            "workspace": {"workspace_id":"w2","number":2,"label":"other","focused":true,"pane_count":1,"tab_count":1,"active_tab_id":"w2:t1","agent_status":"idle"},
+            "tab": {"tab_id":"w2:t1","workspace_id":"w2","number":1,"label":"main","focused":true,"pane_count":1,"agent_status":"idle"},
+            "root_pane": {"pane_id":"w2:p1","terminal_id":"term1","workspace_id":"w2","focused":true,"agent_status":"idle","revision":1}
+          }
+        }"#;
+        let err = parse_workspace_created(&output(true, missing_tab)).unwrap_err();
+        match err {
+            crate::herdr::cli::RunError::Failed(error) => {
+                assert_eq!(error.kind(), ErrorKind::HerdrProtocol);
+            }
+            crate::herdr::cli::RunError::Interrupted => panic!("unexpected interrupt"),
+        }
     }
 
     #[test]

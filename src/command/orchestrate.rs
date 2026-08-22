@@ -114,7 +114,14 @@ fn prepare_view(
         if view.caller.cwd == paths.target {
             return Ok((view, recomputed));
         }
-        match fill_shell_evidence(&mut view.session, &paths.target, context, !recomputed, halt)? {
+        match fill_shell_evidence(
+            &mut view.session,
+            &view.caller,
+            &paths.target,
+            context,
+            !recomputed,
+            halt,
+        )? {
             EvidenceFill::Ready => return Ok((view, recomputed)),
             EvidenceFill::NeedRecompute => {
                 recomputed = true;
@@ -144,12 +151,13 @@ fn load_view(
 
 fn fill_shell_evidence(
     session: &mut Session,
+    caller: &Caller,
     target: &CanonicalPath,
     context: &InsideContext,
     allow_recompute: bool,
     halt: &impl Fn() -> bool,
 ) -> Result<EvidenceFill, RunError> {
-    let pane_ids: Vec<PaneId> = exact_path_shell_candidates(session, target)
+    let pane_ids: Vec<PaneId> = exact_path_shell_candidates(session, caller, target)
         .into_iter()
         .filter(|pane| matches!(pane.occupant, Occupant::Shell(None)))
         .map(|pane| pane.id.clone())
@@ -216,7 +224,7 @@ fn is_create(action: &Action) -> bool {
     )
 }
 
-fn check(interrupted: &dyn Fn() -> bool, deadline: Instant) -> Result<(), RunError> {
+pub(crate) fn check(interrupted: &dyn Fn() -> bool, deadline: Instant) -> Result<(), RunError> {
     if interrupted() {
         Err(RunError::Interrupted)
     } else if Instant::now() >= deadline {
@@ -307,6 +315,7 @@ case "$1 $2" in
   "pane process-info")
     pane="$4"
     if [ -f "$ROOT/sleep_process" ]; then sleep "$(cat "$ROOT/sleep_process")"; fi
+    if [ -f "$ROOT/proc/${{pane}}.sleep" ]; then sleep "$(cat "$ROOT/proc/${{pane}}.sleep")"; fi
     if [ -f "$ROOT/proc/${{pane}}.nf" ]; then
       printf '%s\n' '{{"id":"x","error":{{"code":"not_found","message":"pane not found"}}}}' >&2
       exit 1
@@ -403,6 +412,14 @@ esac
         fn set_snapshot_sleep(&self, seconds: u64) {
             fs::write(
                 self.dir.path().join("sleep_snapshot"),
+                format!("{seconds}\n"),
+            )
+            .unwrap();
+        }
+
+        fn set_process_sleep(&self, pane: &str, seconds: u64) {
+            fs::write(
+                self.dir.path().join("proc").join(format!("{pane}.sleep")),
                 format!("{seconds}\n"),
             )
             .unwrap();
@@ -1106,6 +1123,101 @@ esac
             .unwrap();
         assert_eq!(world.count_prefix("api snapshot"), 2);
         assert_eq!(world.count_prefix("pane current"), 2);
+    }
+
+    #[test]
+    fn unrelated_workspace_process_info_is_not_inspected_for_descendant() {
+        let world = World::new();
+        let repo = world.repo_str();
+        let src = world.src_str();
+        let other = world.other_str();
+        world.write_snapshot1(workspace_snapshot(
+            "w1",
+            &[
+                workspace_record("w1", "w1:t1", None),
+                workspace_record("w2", "w2:t1", Some(&other)),
+            ],
+            &[tab_record("w1:t1", "w1"), tab_record("w2:t1", "w2")],
+            &[
+                shell_pane("w1:p1", &repo, &repo, true),
+                json!({
+                    "pane_id": "w2:p9",
+                    "terminal_id": "term-w2",
+                    "workspace_id": "w2",
+                    "tab_id": "w2:t1",
+                    "focused": true,
+                    "agent_status": "idle",
+                    "revision": 1,
+                    "cwd": other,
+                    "foreground_cwd": src
+                }),
+            ],
+            &[
+                layout_record("w1", "w1:t1", "w1:p1"),
+                layout_record("w2", "w2:t1", "w2:p9"),
+            ],
+        ));
+        world.set_process_sleep("w2:p9", 3);
+        let started = Instant::now();
+        assert_cd(world.run_from(&world.repo, "src").unwrap(), &world.src);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(world.count_prefix("pane process-info --pane w2:p9"), 0);
+        assert_eq!(world.count_prefix("tab create"), 0);
+        assert_eq!(world.count_prefix("workspace create"), 0);
+    }
+
+    #[test]
+    fn containing_workspace_shell_is_inspected_when_cwd_descent_does_not_apply() {
+        let world = World::new();
+        let src = world.src_str();
+        let other = world.other_str();
+        world.write_snapshot1(workspace_snapshot(
+            "w1",
+            &[
+                workspace_record("w1", "w1:t1", None),
+                workspace_record("w2", "w2:t1", Some(&other)),
+            ],
+            &[tab_record("w1:t1", "w1"), tab_record("w2:t1", "w2")],
+            &[
+                json!({
+                    "pane_id": "w1:p1",
+                    "terminal_id": "term-p1",
+                    "workspace_id": "w1",
+                    "tab_id": "w1:t1",
+                    "focused": true,
+                    "agent_status": "idle",
+                    "revision": 1,
+                    "cwd": src,
+                    "foreground_cwd": src
+                }),
+                json!({
+                    "pane_id": "w2:p1",
+                    "terminal_id": "term-w2",
+                    "workspace_id": "w2",
+                    "tab_id": "w2:t1",
+                    "focused": true,
+                    "agent_status": "idle",
+                    "revision": 1,
+                    "cwd": other,
+                    "foreground_cwd": other
+                }),
+            ],
+            &[
+                layout_record("w1", "w1:t1", "w1:p1"),
+                layout_record("w2", "w2:t1", "w2:p1"),
+            ],
+        ));
+        world.write_current1(current_json("w1:p1", "w1:t1", "w1", &src));
+        let server = serve_focus(&world.socket_path(), vec![FocusReply::Ok]);
+        assert_silent(
+            world
+                .run_from(&world.src, world.other.to_str().unwrap())
+                .unwrap(),
+        );
+        server.join().unwrap();
+        assert_eq!(world.count_prefix("pane process-info --pane w2:p1"), 1);
+        assert_eq!(world.count_prefix("tab create"), 0);
+        assert_eq!(world.count_prefix("workspace create"), 0);
     }
 
     #[test]
