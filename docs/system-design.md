@@ -648,6 +648,8 @@ The GitHub Actions workflow in `.github/workflows/ci.yml` will:
 - validate the declared minimum Rust version and latest stable Rust;
 - keep default workflow permissions read-only and omit deployment,
   publishing, and release-upload steps;
+- pin every external GitHub Action to a full commit SHA with a version
+  comment, and advance those pins through reviewed updates;
 - omit Windows jobs until Windows becomes a supported platform by an explicit
   design decision.
 
