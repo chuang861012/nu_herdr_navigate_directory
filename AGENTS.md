@@ -16,9 +16,6 @@
 - Do not silently diverge from an approved design decision. Update the design
   document in the same change when an implementation decision changes the
   specified behavior, compatibility boundary, or security property.
-- Keep the initial scope deliberately small. Do not add configuration,
-  commands, platforms, transports, or distribution channels that the design
-  lists as non-goals without explicit approval.
 
 ## Implementation
 
