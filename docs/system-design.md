@@ -6,12 +6,11 @@ Last updated: 2026-08-22
 
 Planned initial version: 0.1.0
 
-Implementation status: Phase 1 plugin foundation is implemented locally and
-awaits user confirmation. Later phases have not started. The staged delivery
-plan is defined in [Implementation Phases](phases/README.md). This document
-remains the authoritative requirements and architecture specification; phase
-files define execution order and acceptance gates but must not override this
-document.
+Implementation status: Phase 1 plugin foundation is complete. Later phases
+have not started. The staged delivery plan is defined in
+[Implementation Phases](phases/README.md). This document remains the
+authoritative requirements and architecture specification; phase files define
+execution order and acceptance gates but must not override this document.
 
 ## 1. Overview
 

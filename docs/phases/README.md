@@ -35,35 +35,33 @@ but no later phase may be declared complete before all dependency gates pass.
 
 ## Phase index
 
-| Phase | Document | System design sections | Primary deliverable | User involvement | Status |
-| --- | --- | --- | --- | --- | --- |
-| 1 | [Foundation](phase-01-foundation.md) | 4–6, 13, 17 | Compilable Rust/Nushell plugin skeleton | Dependency and boundary review | Awaiting user confirmation |
-| 2 | [Domain and paths](phase-02-domain-paths.md) | 7, 9–12 | Canonical path model and pure decision engine | Decision-table review | Not started |
-| 3 | [Herdr inspection](phase-03-herdr-inspection.md) | 5, 8–10, 14–15, 17–18 | Typed read-only Herdr integration | Inspection evidence review | Not started |
-| 4 | [Herdr actions](phase-04-herdr-actions.md) | 12, 14–18 | Exact pane focus and create transports | Action safety review | Not started |
-| 5 | [`hcd` orchestration](phase-05-hcd-orchestration.md) | 6–17, 19 | Complete command, retry, cancellation, and errors | Behavior review and optional manual E2E | Not started |
-| 6 | [Quality, CI, and distribution](phase-06-quality-ci.md) | 19–21 | Full local gates, GitHub Actions, and install docs | Push/PR checks and release-readiness review | Not started |
+| Phase | Document                                                | System design sections | Primary deliverable                                | User involvement                            | Status                     |
+| ----- | ------------------------------------------------------- | ---------------------- | -------------------------------------------------- | ------------------------------------------- | -------------------------- |
+| 1     | [Foundation](phase-01-foundation.md)                    | 4–6, 13, 17            | Compilable Rust/Nushell plugin skeleton            | Dependency and boundary review              | Complete                   |
+| 2     | [Domain and paths](phase-02-domain-paths.md)            | 7, 9–12                | Canonical path model and pure decision engine      | Decision-table review                       | Not started                |
+| 3     | [Herdr inspection](phase-03-herdr-inspection.md)        | 5, 8–10, 14–15, 17–18  | Typed read-only Herdr integration                  | Inspection evidence review                  | Not started                |
+| 4     | [Herdr actions](phase-04-herdr-actions.md)              | 12, 14–18              | Exact pane focus and create transports             | Action safety review                        | Not started                |
+| 5     | [`hcd` orchestration](phase-05-hcd-orchestration.md)    | 6–17, 19               | Complete command, retry, cancellation, and errors  | Behavior review and optional manual E2E     | Not started                |
+| 6     | [Quality, CI, and distribution](phase-06-quality-ci.md) | 19–21                  | Full local gates, GitHub Actions, and install docs | Push/PR checks and release-readiness review | Not started                |
 
-Current progress: Phase 1 agent work is implemented and locally verified. The
-phase remains incomplete until the user confirms the dependency set, command
-signature, and module boundaries.
+Current progress: Phase 1 is complete. Phase 2 has not started.
 
 ## User action and confirmation summary
 
-- [ ] [User confirmation] Phase 1: approve the dependency set, Rust/Nushell
-  versions, command signature, and module boundaries.
+- [x] [User confirmation] Phase 1: approve the dependency set, Rust/Nushell
+      versions, command signature, and module boundaries.
 - [ ] [User confirmation] Phase 2: review the decision-table evidence against
-  the complete navigation tree.
+      the complete navigation tree.
 - [ ] [User confirmation] Phase 3: confirm that inspection remains read-only,
-  fail-closed, and scoped to the caller's live Herdr session.
+      fail-closed, and scoped to the caller's live Herdr session.
 - [ ] [User confirmation] Phase 4: confirm exact-pane focus, create behavior,
-  timeout handling, and absence of destructive rollback.
+      timeout handling, and absence of destructive rollback.
 - [ ] [User confirmation] Phase 5: review complete command behavior and any
-  optional real Nushell/Herdr end-to-end evidence.
+      optional real Nushell/Herdr end-to-end evidence.
 - [ ] [User action] Phase 6: push a feature branch and open or update a pull
-  request when GitHub-hosted CI verification is desired. Agents never push.
+      request when GitHub-hosted CI verification is desired. Agents never push.
 - [ ] [User confirmation] Phase 6: approve the CI results, installation
-  documentation, and 0.1.0 source-distribution readiness.
+      documentation, and 0.1.0 source-distribution readiness.
 
 ## Completion rule
 
