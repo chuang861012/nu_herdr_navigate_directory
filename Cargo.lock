@@ -1268,7 +1268,7 @@ dependencies = [
 
 [[package]]
 name = "nu_plugin_herdr_cd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "nu-plugin",
  "nu-plugin-core",

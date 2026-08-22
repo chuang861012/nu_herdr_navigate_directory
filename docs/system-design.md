@@ -4,13 +4,15 @@ Status: approved design baseline
 
 Last updated: 2026-08-23
 
-Planned initial version: 0.1.0
+Released version: 0.1.1
 
-Implementation status: Phases 1–6 are complete. The 0.1.0 source tree includes
-the complete `hcd` command, local quality gates, a non-deploying Linux/macOS
-GitHub Actions workflow, and source-install documentation. Publishing to any
-registry remains a separate future decision. The completed 0.1.0 staged
-delivery record is archived in
+Implementation status: Phases 1–6 are complete. Version 0.1.1 is the current
+GitHub source release. Version 0.1.0 remains available as a prior source tag.
+The source tree includes the complete `hcd` command, local quality gates, a
+non-deploying Linux/macOS GitHub Actions workflow, and source-install
+documentation. Publishing to crates.io, Homebrew, or prebuilt binaries remains
+a separate future decision. The completed 0.1.0 staged delivery record is
+archived in
 [Implementation Phases](archived/0.1.0/README.md). That archive is a historical
 record and must not be edited. This document remains the authoritative
 requirements and architecture specification.
@@ -39,7 +41,7 @@ repositories, create directories, or manage Herdr named sessions.
 
 ## 3. Non-goals
 
-The initial version will not provide:
+The initial version does not provide:
 
 - cross-session Herdr navigation;
 - Windows support;
@@ -69,10 +71,9 @@ The initial version will not provide:
 The crate uses Rust edition 2024 and a declared `rust-version`. As an
 application binary, it tracks `Cargo.lock`. Exact `nu-plugin` and
 `nu-protocol` versions are recorded in the package manifests; they must use
-the same minor version and target the latest stable Nushell plugin SDK
-available when implementation begins.
+the same minor version. The crate targets Nushell plugin SDK 0.115.
 
-Nushell plugin transport will use `nu_plugin::serve_plugin` with
+Nushell plugin transport uses `nu_plugin::serve_plugin` with
 `MsgPackSerializer`.
 
 ## 5. Supported environments
@@ -360,8 +361,7 @@ Creation does not pass a label. Herdr's own default naming policy applies.
 
 ## 13. Internal architecture
 
-The implementation will be synchronous and stateless, with three narrow
-layers.
+The implementation is synchronous and stateless, with three narrow layers.
 
 ### 13.1 `domain`
 
@@ -473,6 +473,10 @@ back to tab or workspace focus.
 
 Before connecting, `HERDR_SOCKET_PATH` must be absolute, resolve to an existing
 Unix socket rather than a regular file, and be owned by the effective user.
+After connecting and before sending the request, the client authenticates the
+connected peer with kernel credentials: `SO_PEERCRED` on Linux and `getpeereid`
+on macOS. A peer UID that is not the effective user, or credentials that cannot
+be read, is a transport error.
 
 The `pane.focus` action is expected to select the target workspace, tab, and
 pane in one server operation. Failure never falls back to a less precise tab
@@ -541,8 +545,7 @@ Internal failures use these categories before conversion to Nushell
 | `herdr_protocol` | JSON or response semantics are invalid. |
 | `herdr_action` | Herdr rejected a valid requested action. |
 
-These names are internal in 0.1.0 and are not a stable machine-readable public
-API.
+These names are internal and are not a stable machine-readable public API.
 
 Path errors label the path argument span. Context and Herdr errors label the
 command head span. Errors may include the operation, sanitized Herdr error
@@ -562,7 +565,8 @@ Herdr is the only mode that unconditionally uses ordinary directory change.
 - Only the Herdr-injected binary is executed.
 - The binary's final target is validated as a regular executable file.
 - The direct-focus socket is absolute, local, a Unix socket, and owned by the
-  effective user.
+  effective user. After connect, the connected peer UID is authenticated as the
+  effective user using kernel credentials.
 - JSON inputs and outputs are typed and size-bounded.
 - Unknown response fields are tolerated, but missing or malformed required
   fields fail closed.
@@ -576,7 +580,7 @@ The normal automated suite must not require an installed or running Herdr.
 
 ### 19.1 Pure unit and table tests
 
-The domain layer will cover at least:
+The domain layer covers at least:
 
 - target equals cwd;
 - strict descendant, parent, sibling, and unrelated paths;
@@ -596,7 +600,7 @@ The domain layer will cover at least:
 
 ### 19.2 CLI transport tests
 
-A fake executable will verify:
+A fake executable verifies:
 
 - exact executable selection and argv boundaries;
 - caller Herdr environment forwarding and `HERDR_SESSION` removal;
@@ -608,9 +612,9 @@ A fake executable will verify:
 
 ### 19.3 Socket transport tests
 
-A temporary fake Unix socket server will verify:
+A temporary fake Unix socket server verifies:
 
-- path/type/owner validation;
+- path/type/owner validation and same-user peer credentials after connect;
 - the exact `pane.focus` request shape;
 - unique request IDs and response-ID matching;
 - success, Herdr errors, malformed JSON, truncation, timeout, and
@@ -619,7 +623,7 @@ A temporary fake Unix socket server will verify:
 
 ### 19.4 Nushell adapter tests
 
-Focused tests will verify:
+Focused tests verify:
 
 - the `hcd <path: filepath>` signature;
 - caller cwd and environment access through `EngineInterface` boundaries;
@@ -635,29 +639,33 @@ depend on a live terminal multiplexer session.
 
 ## 20. CI policy
 
-The GitHub Actions workflow in `.github/workflows/ci.yml` will:
+The GitHub Actions workflow in `.github/workflows/ci.yml`:
 
-- build and test on Linux and macOS;
-- run `cargo fmt --check` on Linux;
-- run `cargo clippy --all-targets --all-features -- -D warnings` on Linux;
-- validate the declared minimum Rust version and latest stable Rust;
-- keep default workflow permissions read-only and omit deployment,
+- builds and tests on Linux and macOS with `--locked`;
+- runs `cargo fmt --check` on Linux;
+- runs `cargo clippy --locked --all-targets --all-features -- -D warnings` on
+  Linux;
+- validates the declared minimum Rust version and latest stable Rust;
+- keeps default workflow permissions read-only and omits deployment,
   publishing, and release-upload steps;
-- omit Windows jobs until Windows becomes a supported platform by an explicit
+- pins every external GitHub Action to a full commit SHA with a version
+  comment, and advances those pins through reviewed updates;
+- omits Windows jobs until Windows becomes a supported platform by an explicit
   design decision.
 
 ## 21. Distribution
 
-The initial supported installation paths are source-based:
+The supported installation paths are source-based:
 
 ```text
 cargo install --path .
-cargo install --git <repository-url> nu_plugin_herdr_cd
+cargo install --git <repository-url> --tag <version> nu_plugin_herdr_cd
 plugin add nu_plugin_herdr_cd
 ```
 
-Publishing to crates.io, packaging for Homebrew, and producing signed prebuilt
-release binaries are deferred.
+A GitHub source release tags a revision for `--tag` installs. Publishing to
+crates.io, packaging for Homebrew, and producing signed prebuilt release
+binaries remain deferred.
 
 ## 22. External references
 

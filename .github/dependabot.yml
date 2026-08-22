@@ -1,0 +1,10 @@
+# Reviewed updates for SHA-pinned GitHub Actions. Cargo lockfile updates stay
+# a separate, explicit decision.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci

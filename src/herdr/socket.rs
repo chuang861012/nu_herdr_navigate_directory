@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -72,7 +73,10 @@ fn connect(
             return Err(Error::herdr_timeout("pane focus timed out").into());
         }
         match rx.try_recv() {
-            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Ok(stream)) => {
+                require_peer_current_user(&stream)?;
+                return Ok(stream);
+            }
             Ok(Err(_)) => {
                 return Err(Error::herdr_transport("failed to connect to the Herdr socket").into());
             }
@@ -179,6 +183,94 @@ fn protocol(detail: &str) -> Error {
     Error::herdr_protocol(format!("pane focus: {detail}"))
 }
 
+fn require_peer_current_user(stream: &UnixStream) -> Result<(), RunError> {
+    let uid = peer_uid(stream)
+        .map_err(|_| Error::herdr_transport("failed to authenticate the Herdr socket peer"))?;
+    if !socket_owned_by_current_user(uid) {
+        return Err(Error::herdr_transport("Herdr socket peer is not the current user").into());
+    }
+    Ok(())
+}
+
+fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_peer_uid(stream)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        getpeereid_uid(stream)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_peer_uid(stream: &UnixStream) -> io::Result<u32> {
+    #[repr(C)]
+    struct Ucred {
+        pid: i32,
+        uid: u32,
+        gid: u32,
+    }
+
+    const SOL_SOCKET: i32 = 1;
+    const SO_PEERCRED: i32 = 17;
+
+    unsafe extern "C" {
+        fn getsockopt(
+            sockfd: i32,
+            level: i32,
+            optname: i32,
+            optval: *mut std::ffi::c_void,
+            optlen: *mut u32,
+        ) -> i32;
+    }
+
+    let mut cred = Ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<Ucred>() as u32;
+    // SAFETY: `stream` is a connected Unix socket. `cred` and `len` match the
+    // Linux SO_PEERCRED ucred layout, and getsockopt writes at most *optlen bytes.
+    let rc = unsafe {
+        getsockopt(
+            stream.as_raw_fd(),
+            SOL_SOCKET,
+            SO_PEERCRED,
+            (&raw mut cred).cast(),
+            &raw mut len,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if usize::try_from(len).unwrap_or(0) < std::mem::size_of::<Ucred>() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "incomplete peer credentials",
+        ));
+    }
+    Ok(cred.uid)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn getpeereid_uid(stream: &UnixStream) -> io::Result<u32> {
+    unsafe extern "C" {
+        fn getpeereid(s: i32, euid: *mut u32, egid: *mut u32) -> i32;
+    }
+
+    let mut uid = 0_u32;
+    let mut gid = 0_u32;
+    // SAFETY: `stream` is a connected Unix socket. `uid` and `gid` are valid
+    // out-pointers for getpeereid.
+    let rc = unsafe { getpeereid(stream.as_raw_fd(), &raw mut uid, &raw mut gid) };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(uid)
+}
+
 fn euid() -> u32 {
     unsafe extern "C" {
         fn geteuid() -> u32;
@@ -187,22 +279,31 @@ fn euid() -> u32 {
     unsafe { geteuid() }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn socket_owned_by_current_user(uid: u32) -> bool {
+fn socket_owned_by_current_user(uid: u32) -> bool {
     uid == euid()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{socket_owned_by_current_user, validate_socket_path};
+    use super::{require_peer_current_user, socket_owned_by_current_user, validate_socket_path};
     use crate::domain::ErrorKind;
     use crate::herdr::test_support::TempDir;
-    use std::os::unix::net::UnixListener;
+    use std::os::unix::net::{UnixListener, UnixStream};
 
     #[test]
     fn current_user_ownership_is_required() {
         assert!(socket_owned_by_current_user(super::euid()));
         assert!(!socket_owned_by_current_user(super::euid().wrapping_add(1)));
+    }
+
+    #[test]
+    fn connected_same_user_peer_is_accepted() {
+        let dir = TempDir::new("socket-peer");
+        let path = dir.path().join("herdr.sock");
+        let _listener = UnixListener::bind(&path).unwrap();
+        let stream = UnixStream::connect(&path).unwrap();
+        assert_eq!(super::peer_uid(&stream).unwrap(), super::euid());
+        require_peer_current_user(&stream).unwrap();
     }
 
     #[test]
