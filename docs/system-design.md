@@ -6,13 +6,13 @@ Last updated: 2026-08-22
 
 Planned initial version: 0.1.0
 
-Implementation status: Phases 1–3 are implemented. Phase 3 adds read-only
+Implementation status: Phases 1–3 are complete. Phase 3 provides read-only
 Herdr inspection behind fake-CLI tests; `hcd` still returns not-implemented
-until later phases wire actions and orchestration. The staged delivery plan
-is defined in [Implementation Phases](phases/README.md). This document remains
-the authoritative requirements and architecture specification; phase files
-define execution order and acceptance gates but must not override this
-document.
+until later phases wire actions and orchestration. Phases 4–6 have not
+started. The staged delivery plan is defined in
+[Implementation Phases](phases/README.md). This document remains the
+authoritative requirements and architecture specification; phase files define
+execution order and acceptance gates but must not override this document.
 
 ## 1. Overview
 
