@@ -4,9 +4,9 @@
 directory-navigation command that cooperates with Herdr workspaces, tabs, and
 panes.
 
-The current tree is a compilable plugin skeleton. `hcd` registers its signature
-and returns a not-implemented error. Path handling, Herdr inspection, and
-navigation are not implemented yet.
+The current tree is a compilable plugin skeleton plus a pure domain path model
+and decision engine. `hcd` still returns a not-implemented error. Herdr
+inspection, actions, and command orchestration are not implemented yet.
 
 See [the system design](docs/system-design.md) for the agreed behavior,
 architecture, constraints, and verification strategy.

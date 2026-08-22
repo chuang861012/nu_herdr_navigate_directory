@@ -6,8 +6,9 @@ Last updated: 2026-08-22
 
 Planned initial version: 0.1.0
 
-Implementation status: Phase 1 plugin foundation is complete. Later phases
-have not started. The staged delivery plan is defined in
+Implementation status: Phase 1 plugin foundation is complete. Phase 2 domain
+path model and pure decision engine are implemented and await user confirmation.
+Phases 3–6 have not started. The staged delivery plan is defined in
 [Implementation Phases](phases/README.md). This document remains the
 authoritative requirements and architecture specification; phase files define
 execution order and acceptance gates but must not override this document.
@@ -331,15 +332,15 @@ The pure decision layer returns one of these actions:
 ```rust
 enum Action {
     NoOp,
-    ChangeDirectory { path: PathBuf },
-    FocusPane { pane_id: String },
-    CreateTab { workspace_id: String, cwd: PathBuf },
-    CreateWorkspace { cwd: PathBuf },
+    ChangeDirectory { path: CanonicalPath },
+    FocusPane { pane_id: PaneId },
+    CreateTab { workspace_id: WorkspaceId, cwd: CanonicalPath },
+    CreateWorkspace { cwd: CanonicalPath },
 }
 ```
 
-The exact types may evolve during implementation, but the action set and its
-semantics are part of this design baseline.
+The implementation uses canonical-path and resource-ID newtypes at this
+boundary. The action set and its semantics are part of this design baseline.
 
 - `NoOp` returns `nothing`.
 - `ChangeDirectory` updates only the calling Nushell scope.

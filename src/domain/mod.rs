@@ -1,6 +1,23 @@
 //! Pure decision types, path model, and internal error categories.
 //!
 //! This layer must stay free of Nushell and Herdr side effects.
+//! Command and Herdr layers consume the crate-internal API in later phases.
+
+#![cfg_attr(not(test), allow(dead_code))]
+
+mod decision;
+mod path;
+mod types;
+
+#[allow(unused_imports)]
+pub(crate) use decision::decide;
+#[allow(unused_imports)]
+pub(crate) use path::{CanonicalPath, ResolvedPaths, resolve_paths};
+#[allow(unused_imports)]
+pub(crate) use types::{
+    Action, AgentStatus, Caller, ForegroundProcess, Occupant, Pane, PaneId, Session,
+    ShellProcessEvidence, Tab, TabId, Workspace, WorkspaceId,
+};
 
 /// Internal failure category before conversion to a Nushell `LabeledError`.
 ///
@@ -40,6 +57,42 @@ impl std::fmt::Display for ErrorKind {
         f.write_str(self.as_str())
     }
 }
+
+/// Domain-layer failure with an internal kind and a bounded human-readable message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Error {
+    kind: ErrorKind,
+    message: String,
+}
+
+impl Error {
+    pub(crate) fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn invalid_path(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::InvalidPath, message)
+    }
+
+    pub(crate) fn kind(&self) -> ErrorKind {
+        self.kind
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Error {}
 
 #[cfg(test)]
 mod tests {
