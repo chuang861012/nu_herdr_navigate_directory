@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sending a pane-focus request. A replaced socket path whose peer is not the
   current user is now a transport error.
 
-## [0.1.0] - 2026-08-23
+## [0.1.0] - 2026-08-22
 
 ### Added
 

@@ -11,7 +11,7 @@ pane when you go deeper, jump to an idle pane already there, or open a new tab
 or workspace. Success is silent.
 
 See [the system design](docs/system-design.md) for architecture, constraints,
-and verification.
+and verification. Notable changes are in the [changelog](CHANGELOG.md).
 
 ## Prerequisites
 
@@ -27,8 +27,10 @@ ordinary directory change.
 ## Install
 
 ```text
-cargo install --git https://github.com/chuang861012/nu_herdr_cd nu_plugin_herdr_cd
+cargo install --git https://github.com/chuang861012/nu_herdr_cd --tag 0.1.0 nu_plugin_herdr_cd
 ```
+
+Omit `--tag 0.1.0` to install the default branch instead of the 0.1.0 release.
 
 In Nushell, with `~/.cargo/bin` on `PATH`:
 
@@ -139,8 +141,8 @@ There are no flags, environment variables, or config files that change how
 
 ```text
 cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
 cargo build --release
 ```
 
