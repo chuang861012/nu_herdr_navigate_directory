@@ -30,6 +30,10 @@ ordinary directory change.
 
 ## How `hcd` decides
 
+> [!WARNING]
+> `hcd` is opinionated. This version does not provide behavior customization.
+> Customization may be added in a future version.
+
 The target must exist, be an enterable directory, and resolve to a canonical
 UTF-8 path. `~` and a leading `~/` are expanded. Relative paths are resolved
 against the caller's cwd.
