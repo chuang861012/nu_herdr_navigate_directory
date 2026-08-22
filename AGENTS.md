@@ -72,3 +72,8 @@ be declared complete before its dependency gates pass.
 - Keep unrelated user changes separate and do not overwrite them.
 - Use Conventional Commits for repository commits.
 - Never push from the agent environment.
+
+## Commit & Pull Request Guidelines
+
+- Before implementation, run `git branch --show-current`. If it reports `main`, create or switch to a focused feature branch before changing code, tests, configuration, or migrations. Never commit implementation work directly to `main`.
+- History uses Conventional Commit subjects such as `docs: add system design`. Keep commits focused with an imperative `<type>: <summary>`. PRs should describe scope, list verification commands, and include screenshots for UI changes. Do not update archived pre-release progress files.
