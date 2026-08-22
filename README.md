@@ -24,6 +24,24 @@ Inside Herdr, `hcd` uses only the caller-injected `HERDR_BIN_PATH`. It never
 searches `PATH`. Incomplete Herdr context is an error, not a fallback to
 ordinary directory change.
 
+## Install
+
+```text
+cargo install --git https://github.com/chuang861012/nu_herdr_cd nu_plugin_herdr_cd
+```
+
+In Nushell, with `~/.cargo/bin` on `PATH`:
+
+```nu
+plugin add nu_plugin_herdr_cd
+plugin use herdr_cd
+hcd ~
+```
+
+From a local checkout, use `cargo install --path .` instead. `plugin add` is
+not required again after a Nushell restart if the plugin remains in the
+registry.
+
 ## How `hcd` decides
 
 > [!WARNING]
@@ -135,47 +153,12 @@ stable, using `--locked`. They also run formatting and warning-denied Clippy
 on Linux. The workflow has read-only default permissions and does not publish,
 deploy, or upload releases.
 
-## Source installation
-
-The initial supported installation paths are source-based. Publishing to
-crates.io, packaging for Homebrew, and producing prebuilt binaries are
-deferred.
-
-From a local checkout:
-
-```text
-cargo install --path .
-```
-
-From the Git repository:
-
-```text
-cargo install --git https://github.com/chuang861012/nu_herdr_cd nu_plugin_herdr_cd
-```
-
-Both commands install `nu_plugin_herdr_cd` into Cargo's binary directory,
-normally `~/.cargo/bin`.
-
-## Plugin registration
-
-Registration writes to the current Nushell plugin registry. After a source
-install, with the binary on `PATH`:
-
-```nu
-plugin add nu_plugin_herdr_cd
-plugin use herdr_cd
-```
-
-During development, register the release binary from the checkout instead:
+During development, register the release binary from the checkout:
 
 ```nu
 plugin add target/release/nu_plugin_herdr_cd
 plugin use herdr_cd
 ```
-
-`plugin add` is not required again after a Nushell restart if the plugin
-remains in the registry. After registration, `hcd <path>` follows the decision
-tree above.
 
 ## Future work
 
