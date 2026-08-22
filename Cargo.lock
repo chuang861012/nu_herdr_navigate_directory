@@ -1271,6 +1271,8 @@ name = "nu_plugin_herdr_cd"
 version = "0.1.0"
 dependencies = [
  "nu-plugin",
+ "nu-plugin-core",
+ "nu-plugin-protocol",
  "nu-protocol",
  "serde",
  "serde_json",
