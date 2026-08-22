@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Install docs now register the plugin with the installed binary path. `plugin
+  add` searches the current directory and `NU_PLUGIN_DIRS`, not `PATH`.
+
 ## [0.1.1] - 2026-08-23
 
 ### Security

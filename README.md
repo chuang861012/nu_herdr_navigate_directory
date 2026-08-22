@@ -32,13 +32,18 @@ cargo install --git https://github.com/chuang861012/nu_herdr_cd --tag 0.1.1 nu_p
 
 Omit `--tag 0.1.1` to install the default branch instead of the 0.1.1 release.
 
-In Nushell, with `~/.cargo/bin` on `PATH`:
+Register the installed binary in Nushell. `plugin add` looks in the current
+directory and `NU_PLUGIN_DIRS`; it does not search `PATH`. Cargo's default
+install location is `~/.cargo/bin`:
 
 ```nu
-plugin add nu_plugin_herdr_cd
+plugin add ~/.cargo/bin/nu_plugin_herdr_cd
 plugin use herdr_cd
 hcd ~
 ```
+
+If Cargo's bin directory is not `~/.cargo/bin`, pass that path instead. To
+register by filename alone, add the bin directory to `NU_PLUGIN_DIRS` first.
 
 From a local checkout, use `cargo install --path .` instead. `plugin add` is
 not required again after a Nushell restart if the plugin remains in the
