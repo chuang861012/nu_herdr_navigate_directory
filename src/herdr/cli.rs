@@ -130,7 +130,7 @@ fn redaction_secrets(context: &InsideContext) -> Vec<String> {
         context.bin.display().to_string(),
     ];
     secrets.retain(|secret| secret.chars().count() >= super::MIN_SECRET_CHARS);
-    secrets.sort_by(|a, b| b.chars().count().cmp(&a.chars().count()));
+    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.chars().count()));
     secrets.dedup();
     secrets
 }
