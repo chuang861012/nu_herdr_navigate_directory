@@ -187,6 +187,7 @@ fn euid() -> u32 {
     unsafe { geteuid() }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn socket_owned_by_current_user(uid: u32) -> bool {
     uid == euid()
 }

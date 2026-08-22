@@ -3,17 +3,12 @@
 //! This layer must stay free of Nushell and Herdr side effects.
 //! Command and Herdr layers consume the crate-internal API in later phases.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 mod decision;
 mod path;
 mod types;
 
-#[allow(unused_imports)]
 pub(crate) use decision::decide;
-#[allow(unused_imports)]
 pub(crate) use path::{CanonicalPath, ResolvedPaths, resolve_paths};
-#[allow(unused_imports)]
 pub(crate) use types::{
     Action, AgentStatus, Caller, ForegroundProcess, Occupant, Pane, PaneId, Session,
     ShellProcessEvidence, Tab, TabId, Workspace, WorkspaceId,
@@ -22,9 +17,7 @@ pub(crate) use types::{
 /// Internal failure category before conversion to a Nushell `LabeledError`.
 ///
 /// These names are internal in 0.1.0 and are not a stable machine-readable
-/// public API. Construction is added as the corresponding failure paths are
-/// implemented.
-#[allow(dead_code)]
+/// public API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ErrorKind {
     InvalidPath,
@@ -75,6 +68,10 @@ impl Error {
 
     pub(crate) fn invalid_path(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::InvalidPath, message)
+    }
+
+    pub(crate) fn unsupported_platform(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::UnsupportedPlatform, message)
     }
 
     pub(crate) fn invalid_herdr_context(message: impl Into<String>) -> Self {

@@ -55,6 +55,7 @@ impl CanonicalPath {
         self.0.to_str().expect("canonical paths are UTF-8")
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn into_path_buf(self) -> PathBuf {
         self.0
     }

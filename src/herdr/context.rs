@@ -14,7 +14,6 @@ pub(crate) enum EnvValue {
 }
 
 /// Top-level Herdr mode derived from `HERDR_ENV`.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum HerdrMode {
     Outside,

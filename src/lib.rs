@@ -1,4 +1,4 @@
-//! Nushell plugin that will provide the `hcd` command.
+//! Nushell plugin that provides the `hcd` command.
 
 mod command;
 mod domain;

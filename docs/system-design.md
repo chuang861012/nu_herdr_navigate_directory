@@ -6,11 +6,13 @@ Last updated: 2026-08-23
 
 Planned initial version: 0.1.0
 
-Implementation status: Phases 1–4 are complete. Phase 4 provides exact-pane
-focus and focused tab/workspace creation behind typed APIs and fake
-socket/CLI tests. `hcd` still returns not-implemented until phase 5 wires
-orchestration. Phases 5–6 have not started. The staged delivery plan is
-defined in [Implementation Phases](phases/README.md). This document remains the
+Implementation status: Phases 1–5 agent work is complete. Phase 5 wires the
+complete `hcd` inspect-decide-act loop, including bounded recomputation, the
+10-second total deadline, interruption, structured errors, and fake
+transport tests. Successful calls return `nothing`; only `ChangeDirectory`
+updates the caller's `$env.PWD`. Phase 5 still requires user confirmation.
+Phase 6 has not started. The staged delivery plan is defined in
+[Implementation Phases](phases/README.md). This document remains the
 authoritative requirements and architecture specification; phase files define
 execution order and acceptance gates but must not override this document.
 

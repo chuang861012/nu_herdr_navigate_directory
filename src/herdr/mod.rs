@@ -3,8 +3,6 @@
 //! This module is the side-effect boundary for talking to Herdr. Transport JSON
 //! types do not leak into `domain` or `command`.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 mod cli;
 mod context;
 mod create;
@@ -14,21 +12,17 @@ mod protocol;
 mod socket;
 
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
-#[allow(unused_imports)]
-pub(crate) use cli::{READ_TIMEOUT, RunError};
-#[allow(unused_imports)]
+pub(crate) use cli::RunError;
 pub(crate) use context::{EnvValue, HerdrMode, InsideContext, classify_herdr_env, inside_context};
-#[allow(unused_imports)]
-pub(crate) use create::{CreatedTab, CreatedWorkspace, create_tab, create_workspace};
-#[allow(unused_imports)]
+pub(crate) use create::{create_tab, create_workspace};
 pub(crate) use focus::{FocusResult, focus_pane};
-#[allow(unused_imports)]
 pub(crate) use inspect::{
-    LiveCaller, ProcessInspection, SessionInspection, apply_shell_evidence,
-    exact_path_shell_candidates, inspect_process, inspect_session,
+    ProcessInspection, SessionInspection, apply_shell_evidence, exact_path_shell_candidates,
+    inspect_process, inspect_session,
 };
+pub(crate) use protocol::CommandResult;
 
 const MAX_ERROR_DETAIL_CHARS: usize = 200;
 const REDACTED: &str = "<redacted>";
