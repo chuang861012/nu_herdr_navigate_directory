@@ -2,6 +2,7 @@
 
 use std::io::{self, Read};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -71,37 +72,46 @@ pub(crate) fn run(
         .take()
         .ok_or_else(|| Error::herdr_transport("Herdr command stderr was not captured"))?;
 
-    let stdout_handle = thread::spawn(move || read_bounded(stdout, MAX_RESPONSE_BYTES));
-    let stderr_handle = thread::spawn(move || read_bounded(stderr, MAX_RESPONSE_BYTES));
+    let stdout_rx = spawn_reader(stdout);
+    let stderr_rx = spawn_reader(stderr);
 
     let deadline = Instant::now() + timeout;
-    let status = loop {
+    let mut status = None;
+    let mut stdout_read = None;
+    let mut stderr_read = None;
+    loop {
         if interrupted() {
             terminate(&mut child);
-            drain(stdout_handle, stderr_handle);
             return Err(RunError::Interrupted);
         }
         if Instant::now() >= deadline {
             terminate(&mut child);
-            drain(stdout_handle, stderr_handle);
             return Err(Error::herdr_timeout("Herdr inspection timed out").into());
         }
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => thread::sleep(POLL_INTERVAL),
-            Err(_) => {
-                terminate(&mut child);
-                drain(stdout_handle, stderr_handle);
-                return Err(Error::herdr_transport(
-                    "failed to wait for the Herdr inspection command",
-                )
-                .into());
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(Some(exit)) => status = Some(exit),
+                Ok(None) => {}
+                Err(_) => {
+                    terminate(&mut child);
+                    return Err(Error::herdr_transport(
+                        "failed to wait for the Herdr inspection command",
+                    )
+                    .into());
+                }
             }
         }
-    };
+        take_reader(&stdout_rx, &mut stdout_read)?;
+        take_reader(&stderr_rx, &mut stderr_read)?;
+        if status.is_some() && stdout_read.is_some() && stderr_read.is_some() {
+            break;
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
 
-    let stdout = join_reader(stdout_handle)?;
-    let stderr = join_reader(stderr_handle)?;
+    let stdout = stdout_read.expect("stdout reader completed");
+    let stderr = stderr_read.expect("stderr reader completed");
+    let status = status.expect("child exited");
     if stdout.exceeded || stderr.exceeded {
         return Err(Error::herdr_protocol("Herdr response exceeded the 4 MiB limit").into());
     }
@@ -170,22 +180,30 @@ unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }
 
-fn drain(
-    stdout: thread::JoinHandle<io::Result<BoundedRead>>,
-    stderr: thread::JoinHandle<io::Result<BoundedRead>>,
-) {
-    let _ = stdout.join();
-    let _ = stderr.join();
+fn spawn_reader(reader: impl Read + Send + 'static) -> mpsc::Receiver<io::Result<BoundedRead>> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(read_bounded(reader, MAX_RESPONSE_BYTES));
+    });
+    rx
 }
 
-fn join_reader(
-    handle: thread::JoinHandle<io::Result<BoundedRead>>,
-) -> Result<BoundedRead, RunError> {
-    match handle.join() {
-        Ok(Ok(read)) => Ok(read),
-        Ok(Err(_)) | Err(_) => {
+fn take_reader(
+    rx: &mpsc::Receiver<io::Result<BoundedRead>>,
+    slot: &mut Option<BoundedRead>,
+) -> Result<(), RunError> {
+    if slot.is_some() {
+        return Ok(());
+    }
+    match rx.try_recv() {
+        Ok(Ok(read)) => {
+            *slot = Some(read);
+            Ok(())
+        }
+        Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
             Err(Error::herdr_transport("failed to read the Herdr inspection command output").into())
         }
+        Err(mpsc::TryRecvError::Empty) => Ok(()),
     }
 }
 
@@ -334,6 +352,49 @@ mod tests {
             RunError::Failed(error) => assert_eq!(error.kind(), ErrorKind::HerdrTimeout),
             RunError::Interrupted => panic!("expected timeout"),
         }
+    }
+
+    #[test]
+    fn timeout_reaps_descendants_that_keep_pipes_open_after_the_child_exits() {
+        let _cli = lock_cli();
+        // The wrapper exits immediately; the background sleep keeps stdout open.
+        let (_dir, bin) = fake_script("sleep 5 &\nprintf '{}\\n'\n");
+        let context = context_for(&bin);
+        let started = Instant::now();
+        let err = run(
+            &context,
+            &["api", "snapshot"],
+            Duration::from_millis(200),
+            || false,
+        )
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "reader wait after child exit must stay inside the deadline, elapsed {:?}",
+            started.elapsed()
+        );
+        match err {
+            RunError::Failed(error) => assert_eq!(error.kind(), ErrorKind::HerdrTimeout),
+            RunError::Interrupted => panic!("expected timeout"),
+        }
+    }
+
+    #[test]
+    fn interruption_terminates_descendants_after_the_child_exits() {
+        let _cli = lock_cli();
+        let (_dir, bin) = fake_script("sleep 5 &\nprintf '{}\\n'\n");
+        let context = context_for(&bin);
+        let started = Instant::now();
+        let err = run(&context, &["api", "snapshot"], READ_TIMEOUT, || {
+            started.elapsed() > Duration::from_millis(50)
+        })
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "interrupt must be observed while waiting for pipe-holding descendants, elapsed {:?}",
+            started.elapsed()
+        );
+        assert!(matches!(err, RunError::Interrupted));
     }
 
     #[test]
