@@ -1,6 +1,6 @@
 # nu_herdr_navigate_directory
 
-Herdr-aware `cd` for Nushell.
+Herdr-aware directory navigation for Nushell.
 
 ```nu
 hnd <path: filepath> -> nothing
