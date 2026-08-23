@@ -109,13 +109,23 @@ fn inspect_session_parallel(
         CommandResult::Ok(snapshot) => snapshot,
         CommandResult::NotFound { .. } => return Ok(SessionInspection::Stale),
     };
-    protocol::require_supported_version(&snapshot)?;
-    let session = super::cli::run_bounded(&interrupted, move || map_session(&snapshot))??;
-    let live_pane = match current_result? {
-        CommandResult::Ok(pane) => pane,
-        CommandResult::NotFound { .. } => return Ok(SessionInspection::Stale),
-    };
-    finish_inspection(session, live_pane)
+    finalize_inspection_bounded(snapshot, current_result, &interrupted)
+}
+
+fn finalize_inspection_bounded(
+    snapshot: RawSnapshot,
+    current_result: Result<CommandResult<RawPane>, RunError>,
+    halt: &dyn Fn() -> bool,
+) -> Result<SessionInspection, RunError> {
+    cli::run_bounded(halt, move || {
+        protocol::require_supported_version(&snapshot)?;
+        let session = map_session(&snapshot)?;
+        let live_pane = match current_result? {
+            CommandResult::Ok(pane) => pane,
+            CommandResult::NotFound { .. } => return Ok(SessionInspection::Stale),
+        };
+        finish_inspection(session, live_pane)
+    })?
 }
 
 fn recv_cli_result<T>(
@@ -498,8 +508,8 @@ fn require_id(kind: &str, id: &str) -> Result<(), Error> {
 mod tests {
     use super::{
         LiveCaller, ProcessInspection, SessionInspection, apply_shell_evidence,
-        exact_path_shell_candidates, inspect_process, inspect_session, inspect_session_concurrent,
-        map_session,
+        exact_path_shell_candidates, finalize_inspection_bounded, inspect_process, inspect_session,
+        inspect_session_concurrent, map_session,
     };
     use crate::domain::CanonicalPath;
     use crate::domain::{AgentStatus, Caller, Occupant, PaneId, TabId, WorkspaceId};
@@ -598,6 +608,19 @@ mod tests {
         };
         let CommandResult::Ok(raw) = parse_snapshot(&output).unwrap() else {
             panic!("snapshot");
+        };
+        raw
+    }
+
+    fn raw_current(json: &str) -> super::RawPane {
+        let output = crate::herdr::cli::CliOutput {
+            stdout: json.as_bytes().to_vec(),
+            stderr: Vec::new(),
+            status: std::os::unix::process::ExitStatusExt::from_raw(0),
+        };
+        let CommandResult::Ok(raw) = crate::herdr::protocol::parse_pane_current(&output).unwrap()
+        else {
+            panic!("current pane");
         };
         raw
     }
@@ -1045,6 +1068,18 @@ esac
         assert!(matches!(
             inspect_session_concurrent(&stale_ctx, super::READ_TIMEOUT, || false).unwrap(),
             SessionInspection::Stale
+        ));
+    }
+
+    #[test]
+    fn concurrent_inspection_finalization_honors_halt() {
+        let root = TempDir::new("finalize-halt");
+        let snapshot = raw_snapshot(&snapshot_json(root.path().to_str().unwrap(), "", ""));
+        let current = raw_current(&current_json(root.path().to_str().unwrap(), "w1:p1"));
+
+        assert!(matches!(
+            finalize_inspection_bounded(snapshot, Ok(CommandResult::Ok(current)), &|| true),
+            Err(crate::herdr::cli::RunError::Interrupted)
         ));
     }
 
