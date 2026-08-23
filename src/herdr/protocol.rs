@@ -734,11 +734,11 @@ mod tests {
 
     #[test]
     fn pane_focus_matches_request_id_and_pane_id() {
-        let json = r#"{"id":"hcd-1","result":{"type":"pane_info","pane":{"pane_id":"w1:p2","ignored":true}}}"#;
-        parse_pane_focus_response(json.as_bytes(), "hcd-1", "w1:p2").unwrap();
+        let json = r#"{"id":"hnd-1","result":{"type":"pane_info","pane":{"pane_id":"w1:p2","ignored":true}}}"#;
+        parse_pane_focus_response(json.as_bytes(), "hnd-1", "w1:p2").unwrap();
 
         let mismatch = r#"{"id":"other","result":{"type":"pane_info","pane":{"pane_id":"w1:p2"}}}"#;
-        let err = parse_pane_focus_response(mismatch.as_bytes(), "hcd-1", "w1:p2").unwrap_err();
+        let err = parse_pane_focus_response(mismatch.as_bytes(), "hnd-1", "w1:p2").unwrap_err();
         match err {
             crate::herdr::cli::RunError::Failed(error) => {
                 assert!(error.message().contains("response id does not match"))
@@ -747,8 +747,8 @@ mod tests {
         }
 
         let wrong_pane =
-            r#"{"id":"hcd-1","result":{"type":"pane_info","pane":{"pane_id":"w1:p9"}}}"#;
-        let err = parse_pane_focus_response(wrong_pane.as_bytes(), "hcd-1", "w1:p2").unwrap_err();
+            r#"{"id":"hnd-1","result":{"type":"pane_info","pane":{"pane_id":"w1:p9"}}}"#;
+        let err = parse_pane_focus_response(wrong_pane.as_bytes(), "hnd-1", "w1:p2").unwrap_err();
         match err {
             crate::herdr::cli::RunError::Failed(error) => {
                 assert!(error.message().contains("mismatched pane id"))
@@ -757,9 +757,9 @@ mod tests {
         }
 
         let not_found =
-            r#"{"id":"hcd-1","error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}"#;
+            r#"{"id":"hnd-1","error":{"code":"pane_not_found","message":"pane w1:p2 not found"}}"#;
         let CommandResult::NotFound { code, .. } =
-            parse_pane_focus_response(not_found.as_bytes(), "hcd-1", "w1:p2").unwrap()
+            parse_pane_focus_response(not_found.as_bytes(), "hnd-1", "w1:p2").unwrap()
         else {
             panic!("expected not found");
         };
@@ -779,11 +779,16 @@ mod tests {
 
     #[test]
     fn error_details_allow_socket_paths_and_redact_environment_assignments() {
-        let stderr = "cannot connect to /tmp/nu-plugin-herdr-cd.sock HERDR_EXTRA=keep";
+        let stderr =
+            "cannot connect to /tmp/nu-plugin-herdr-navigate-directory.sock HERDR_EXTRA=keep";
         let err = parse_snapshot(&output(false, stderr)).unwrap_err();
         match err {
             crate::herdr::cli::RunError::Failed(error) => {
-                assert!(error.message().contains("/tmp/nu-plugin-herdr-cd.sock"));
+                assert!(
+                    error
+                        .message()
+                        .contains("/tmp/nu-plugin-herdr-navigate-directory.sock")
+                );
                 assert!(!error.message().contains("HERDR_EXTRA=keep"));
                 assert!(error.message().contains("<redacted>"));
             }

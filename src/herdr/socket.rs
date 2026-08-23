@@ -312,7 +312,8 @@ mod tests {
         assert_eq!(relative.kind(), ErrorKind::HerdrTransport);
         assert!(relative.message().contains("absolute"));
 
-        let missing = validate_socket_path("/tmp/nu-plugin-herdr-cd-missing.sock").unwrap_err();
+        let missing = validate_socket_path("/tmp/nu-plugin-herdr-navigate-directory-missing.sock")
+            .unwrap_err();
         assert_eq!(missing.kind(), ErrorKind::HerdrTransport);
 
         let dir = TempDir::new("socket-file");

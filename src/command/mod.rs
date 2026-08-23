@@ -1,4 +1,4 @@
-//! Nushell plugin identity, `hcd` signature, and command-boundary orchestration.
+//! Nushell plugin identity, `hnd` signature, and command-boundary orchestration.
 
 mod orchestrate;
 
@@ -16,7 +16,7 @@ use crate::herdr::{
 
 use orchestrate::{Outcome, TOTAL_DEADLINE, check, map_halt, orchestrate};
 
-/// Caller-side Nushell engine operations used by one `hcd` invocation.
+/// Caller-side Nushell engine operations used by one `hnd` invocation.
 trait CallerEngine: Clone + Send + 'static {
     fn interrupted(&self) -> bool;
     fn current_dir(&self) -> Result<String, Error>;
@@ -51,25 +51,25 @@ impl CallerEngine for EngineInterface {
     }
 }
 
-const COMMAND_NAME: &str = "hcd";
+const COMMAND_NAME: &str = "hnd";
 
-/// Plugin process that registers exactly one public command, `hcd`.
-pub struct HerdrCdPlugin;
+/// Plugin process that registers exactly one public command, `hnd`.
+pub struct HerdrNavigateDirectoryPlugin;
 
-struct Hcd;
+struct Hnd;
 
-impl Plugin for HerdrCdPlugin {
+impl Plugin for HerdrNavigateDirectoryPlugin {
     fn version(&self) -> String {
         env!("CARGO_PKG_VERSION").into()
     }
 
     fn commands(&self) -> Vec<Box<dyn PluginCommand<Plugin = Self>>> {
-        vec![Box::new(Hcd)]
+        vec![Box::new(Hnd)]
     }
 }
 
-impl SimplePluginCommand for Hcd {
-    type Plugin = HerdrCdPlugin;
+impl SimplePluginCommand for Hnd {
+    type Plugin = HerdrNavigateDirectoryPlugin;
 
     fn name(&self) -> &str {
         COMMAND_NAME
@@ -80,7 +80,7 @@ impl SimplePluginCommand for Hcd {
     }
 
     fn extra_description(&self) -> &str {
-        "Outside Herdr, hcd updates $env.PWD. Inside Herdr, it reuses an idle pane, changes directory only for downward navigation, or creates a focused tab or workspace. Successful calls return nothing."
+        "Outside Herdr, hnd updates $env.PWD. Inside Herdr, it reuses an idle pane, changes directory only for downward navigation, or creates a focused tab or workspace. Successful calls return nothing."
     }
 
     fn signature(&self) -> Signature {
@@ -93,16 +93,16 @@ impl SimplePluginCommand for Hcd {
 
     fn run(
         &self,
-        _plugin: &HerdrCdPlugin,
+        _plugin: &HerdrNavigateDirectoryPlugin,
         engine: &EngineInterface,
         call: &EvaluatedCall,
         _input: &Value,
     ) -> Result<Value, LabeledError> {
-        run_hcd(engine, call, Instant::now() + TOTAL_DEADLINE)
+        run_hnd(engine, call, Instant::now() + TOTAL_DEADLINE)
     }
 }
 
-fn run_hcd(
+fn run_hnd(
     engine: &impl CallerEngine,
     call: &EvaluatedCall,
     deadline: Instant,
@@ -112,7 +112,7 @@ fn run_hcd(
     check(&interrupted, deadline).map_err(&fail)?;
     if !platform_is_supported() {
         return Err(labeled_error(
-            &Error::unsupported_platform("hcd supports Linux and macOS only"),
+            &Error::unsupported_platform("hnd supports Linux and macOS only"),
             call.head,
             call.head,
         ));
@@ -252,15 +252,15 @@ fn labeled_error(error: &Error, path_span: Span, head: Span) -> LabeledError {
         _ => head,
     };
     LabeledError::new(error.message())
-        .with_code(format!("herdr_cd::{}", error.kind()))
+        .with_code(format!("herdr_navigate_directory::{}", error.kind()))
         .with_label(error.kind().as_str(), span)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        COMMAND_NAME, CallerEngine, Hcd, HerdrCdPlugin, apply_outcome, labeled_error,
-        nu_value_to_env, platform_is_supported, run_hcd,
+        COMMAND_NAME, CallerEngine, HerdrNavigateDirectoryPlugin, Hnd, apply_outcome,
+        labeled_error, nu_value_to_env, platform_is_supported, run_hnd,
     };
     use crate::PLUGIN_IDENTITY;
     use crate::command::orchestrate::{Outcome, TOTAL_DEADLINE};
@@ -276,16 +276,16 @@ mod tests {
 
     #[test]
     fn plugin_identity_and_version_match_the_package() {
-        let plugin = HerdrCdPlugin;
-        assert_eq!(PLUGIN_IDENTITY, "herdr_cd");
+        let plugin = HerdrNavigateDirectoryPlugin;
+        assert_eq!(PLUGIN_IDENTITY, "herdr_navigate_directory");
         assert_eq!(plugin.version(), env!("CARGO_PKG_VERSION"));
         assert_eq!(plugin.commands().len(), 1);
         assert_eq!(plugin.commands()[0].name(), COMMAND_NAME);
     }
 
     #[test]
-    fn registers_only_hcd_with_the_approved_signature() {
-        let commands = HerdrCdPlugin.commands();
+    fn registers_only_hnd_with_the_approved_signature() {
+        let commands = HerdrNavigateDirectoryPlugin.commands();
         assert_eq!(commands.len(), 1);
 
         let command = &commands[0];
@@ -306,7 +306,7 @@ mod tests {
                 .named
                 .iter()
                 .all(|flag| flag.long == "help" && flag.arg.is_none()),
-            "hcd must not declare command-specific flags, found {:?}",
+            "hnd must not declare command-specific flags, found {:?}",
             signature
                 .named
                 .iter()
@@ -437,7 +437,7 @@ mod tests {
         );
 
         let engine = FakeEngine::outside(cwd_str);
-        let value = run_hcd(
+        let value = run_hnd(
             &engine,
             &test_call(cwd_str),
             Instant::now() + TOTAL_DEADLINE,
@@ -459,21 +459,27 @@ mod tests {
         let deadline = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .expect("clock has elapsed at least one second");
-        let error = run_hcd(&expired, &test_call(cwd_str), deadline).unwrap_err();
-        assert_eq!(error.code.as_deref(), Some("herdr_cd::herdr_timeout"));
+        let error = run_hnd(&expired, &test_call(cwd_str), deadline).unwrap_err();
+        assert_eq!(
+            error.code.as_deref(),
+            Some("herdr_navigate_directory::herdr_timeout")
+        );
         assert_eq!(expired.cwd_calls.load(Ordering::SeqCst), 0);
         assert!(expired.writes().is_empty());
 
         let mut slow = FakeEngine::outside(cwd_str);
         slow.cwd_delay = Duration::from_millis(500);
         let started = Instant::now();
-        let error = run_hcd(
+        let error = run_hnd(
             &slow,
             &test_call(cwd_str),
             Instant::now() + Duration::from_millis(30),
         )
         .unwrap_err();
-        assert_eq!(error.code.as_deref(), Some("herdr_cd::herdr_timeout"));
+        assert_eq!(
+            error.code.as_deref(),
+            Some("herdr_navigate_directory::herdr_timeout")
+        );
         // Hosted macOS timers can overshoot a 10ms poll by tens of milliseconds.
         // The bound still proves the 500ms lookup was not waited out.
         assert!(
@@ -487,7 +493,7 @@ mod tests {
         blocked.cwd_delay = Duration::from_millis(500);
         blocked.interrupt_after = Some(Instant::now() + Duration::from_millis(30));
         let started = Instant::now();
-        let error = run_hcd(
+        let error = run_hnd(
             &blocked,
             &test_call(cwd_str),
             Instant::now() + TOTAL_DEADLINE,
@@ -523,7 +529,10 @@ mod tests {
             &|| false,
         )
         .unwrap_err();
-        assert_eq!(error.code.as_deref(), Some("herdr_cd::herdr_timeout"));
+        assert_eq!(
+            error.code.as_deref(),
+            Some("herdr_navigate_directory::herdr_timeout")
+        );
         assert!(
             started.elapsed() < Duration::from_millis(40),
             "PWD mutation must not be dispatched after halt, elapsed {:?}",
@@ -547,25 +556,28 @@ mod tests {
             path_span,
             head,
         );
-        assert_eq!(path_error.code.as_deref(), Some("herdr_cd::invalid_path"));
+        assert_eq!(
+            path_error.code.as_deref(),
+            Some("herdr_navigate_directory::invalid_path")
+        );
         assert_eq!(path_error.msg, "path is not a directory");
         assert_eq!(path_error.labels[0].text, "invalid_path");
         assert_eq!(path_error.labels[0].span, path_span);
 
         let herdr_kinds = [
-            Error::unsupported_platform("hcd supports Linux and macOS only"),
+            Error::unsupported_platform("hnd supports Linux and macOS only"),
             Error::invalid_herdr_context(
                 "HERDR_SOCKET_PATH is missing from the Herdr caller context",
             ),
             Error::incompatible_herdr("Herdr version or protocol is below the 0.8.2 baseline"),
-            Error::herdr_timeout("hcd exceeded the 10-second deadline"),
+            Error::herdr_timeout("hnd exceeded the 10-second deadline"),
             Error::herdr_transport("failed to start the Herdr command"),
             Error::herdr_protocol("session snapshot: missing snapshot object"),
             Error::herdr_action("pane focus failed after recomputation: pane_not_found: gone"),
         ];
         for error in herdr_kinds {
             let labeled = labeled_error(&error, path_span, head);
-            let expected = format!("herdr_cd::{}", error.kind());
+            let expected = format!("herdr_navigate_directory::{}", error.kind());
             assert_eq!(labeled.code.as_deref(), Some(expected.as_str()));
             assert_eq!(labeled.labels[0].span, head, "{}", error.kind());
             assert_eq!(labeled.labels[0].text, error.kind().as_str());
@@ -587,8 +599,8 @@ mod tests {
     }
 
     #[test]
-    fn hcd_command_name_is_stable() {
-        assert_eq!(PluginCommand::name(&Hcd), COMMAND_NAME);
+    fn hnd_command_name_is_stable() {
+        assert_eq!(PluginCommand::name(&Hnd), COMMAND_NAME);
     }
 
     #[test]

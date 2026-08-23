@@ -8,20 +8,20 @@ use nu_protocol::{SyntaxShape, Type};
 
 #[test]
 fn compiled_binary_name_matches_plugin_identity() {
-    let path = Path::new(env!("CARGO_BIN_EXE_nu_plugin_herdr_cd"));
+    let path = Path::new(env!("CARGO_BIN_EXE_nu_plugin_herdr_navigate_directory"));
     let file_name = path
         .file_name()
         .expect("plugin binary file name")
         .to_string_lossy();
     assert!(
-        file_name.starts_with("nu_plugin_herdr_cd"),
+        file_name.starts_with("nu_plugin_herdr_navigate_directory"),
         "unexpected plugin binary name: {file_name}"
     );
 }
 
 #[test]
-fn compiled_binary_exposes_metadata_and_hcd_signature() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nu_plugin_herdr_cd"))
+fn compiled_binary_exposes_metadata_and_hnd_signature() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nu_plugin_herdr_navigate_directory"))
         .arg("--stdio")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -94,9 +94,9 @@ fn compiled_binary_exposes_metadata_and_hcd_signature() {
     assert_eq!(metadata.version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
 
     let signatures = signatures.expect("plugin signatures");
-    assert_eq!(signatures.len(), 1, "plugin must advertise only hcd");
+    assert_eq!(signatures.len(), 1, "plugin must advertise only hnd");
     let signature = &signatures[0].sig;
-    assert_eq!(signature.name, "hcd");
+    assert_eq!(signature.name, "hnd");
     assert_eq!(signature.required_positional.len(), 1);
     assert_eq!(signature.required_positional[0].name, "path");
     assert_eq!(
@@ -110,7 +110,7 @@ fn compiled_binary_exposes_metadata_and_hcd_signature() {
             .named
             .iter()
             .all(|flag| flag.long == "help" && flag.arg.is_none()),
-        "hcd must not declare command-specific flags, found {:?}",
+        "hnd must not declare command-specific flags, found {:?}",
         signature
             .named
             .iter()

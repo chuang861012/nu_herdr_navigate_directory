@@ -129,7 +129,7 @@ pub(crate) fn run(
 /// Run read-only blocking work on a helper thread so the caller can honor halt.
 ///
 /// The helper is abandoned if halt becomes true before it finishes. The syscall
-/// may continue until the kernel returns; `hcd` itself does not wait. Do not use
+/// may continue until the kernel returns; `hnd` itself does not wait. Do not use
 /// this for caller mutations such as `$env.PWD`; an abandoned worker must not
 /// be able to complete a write after the command has already failed.
 pub(crate) fn run_bounded<T: Send + 'static>(
@@ -264,7 +264,7 @@ mod tests {
         vars.insert("HERDR_EXTRA".into(), "keep".into());
         inside_context(
             bin.to_str().unwrap(),
-            "/tmp/nu-plugin-herdr-cd.sock",
+            "/tmp/nu-plugin-herdr-navigate-directory.sock",
             "w1",
             "w1:t1",
             "w1:p1",
@@ -329,7 +329,9 @@ mod tests {
         let recorded = fs::read_to_string(&record).unwrap();
         assert!(recorded.contains(&format!("argv0={}", context.bin.display())));
         assert!(recorded.contains("args=pane current --current"));
-        assert!(recorded.contains("HERDR_SOCKET_PATH=/tmp/nu-plugin-herdr-cd.sock"));
+        assert!(
+            recorded.contains("HERDR_SOCKET_PATH=/tmp/nu-plugin-herdr-navigate-directory.sock")
+        );
         assert!(recorded.contains("HERDR_SESSION=<unset>"));
         assert!(recorded.contains("HERDR_EXTRA=keep"));
         assert!(recorded.contains("HERDR_PANE_ID=w1:p1"));

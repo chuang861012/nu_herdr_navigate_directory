@@ -39,7 +39,7 @@ pub(crate) fn focus_pane(
 
 fn next_request_id() -> String {
     format!(
-        "hcd-{}-{}",
+        "hnd-{}-{}",
         std::process::id(),
         NEXT_REQUEST.fetch_add(1, Ordering::Relaxed)
     )
@@ -114,7 +114,7 @@ mod tests {
     fn request_ids_are_unique_and_prefixed() {
         let first = next_request_id();
         let second = next_request_id();
-        assert!(first.starts_with("hcd-"));
+        assert!(first.starts_with("hnd-"));
         assert_ne!(first, second);
     }
 
@@ -135,8 +135,8 @@ mod tests {
         assert_eq!(request["method"], "pane.focus");
         assert_eq!(request["params"]["pane_id"], "w1:p2");
         assert!(
-            request["id"].as_str().unwrap().starts_with("hcd-"),
-            "request id must use the hcd- prefix"
+            request["id"].as_str().unwrap().starts_with("hnd-"),
+            "request id must use the hnd- prefix"
         );
         assert!(request.get("params").unwrap().get("direction").is_none());
         server.join().unwrap();

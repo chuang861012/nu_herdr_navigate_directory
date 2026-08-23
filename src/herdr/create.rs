@@ -237,7 +237,7 @@ mod tests {
     fn context_for(bin: &std::path::Path) -> crate::herdr::context::InsideContext {
         inside_context(
             bin.to_str().unwrap(),
-            "/tmp/nu-plugin-herdr-cd.sock",
+            "/tmp/nu-plugin-herdr-navigate-directory.sock",
             "w1",
             "w1:t1",
             "w1:p1",

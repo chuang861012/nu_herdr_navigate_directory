@@ -80,9 +80,9 @@ mod tests {
 
     #[test]
     fn redacts_environment_assignments_without_hiding_paths_or_resource_ids() {
-        let text = "cannot connect to /tmp/nu-plugin-herdr-cd.sock HERDR_SOCKET_PATH=/run/herdr also /run/herdr";
+        let text = "cannot connect to /tmp/nu-plugin-herdr-navigate-directory.sock HERDR_SOCKET_PATH=/run/herdr also /run/herdr";
         let cleaned = sanitize_detail(text);
-        assert!(cleaned.contains("/tmp/nu-plugin-herdr-cd.sock"));
+        assert!(cleaned.contains("/tmp/nu-plugin-herdr-navigate-directory.sock"));
         assert!(cleaned.contains("also /run/herdr"));
         assert!(!cleaned.contains("HERDR_SOCKET_PATH=/run/herdr"));
         assert!(cleaned.contains(REDACTED));

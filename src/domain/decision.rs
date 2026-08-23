@@ -987,7 +987,7 @@ mod tests {
         );
         assert!(
             !matches!(action, Action::ChangeDirectory { .. }),
-            "hcd .. must not change the current pane directory, got {action:?}"
+            "hnd .. must not change the current pane directory, got {action:?}"
         );
         assert_eq!(action, create_tab("ws-a", "/repo"));
     }
