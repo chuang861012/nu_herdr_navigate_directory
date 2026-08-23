@@ -7,7 +7,7 @@ use std::sync::{Mutex, MutexGuard};
 
 static CLI_LOCK: Mutex<()> = Mutex::new(());
 
-/// Serialize process-spawning tests so 4 MiB and timeout cases cannot starve siblings.
+/// Serialize 4 MiB and timeout cases so they cannot starve siblings.
 pub(crate) fn lock_cli() -> MutexGuard<'static, ()> {
     CLI_LOCK
         .lock()

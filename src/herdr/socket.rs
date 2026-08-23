@@ -44,7 +44,14 @@ pub(crate) fn roundtrip(
 ) -> Result<Vec<u8>, RunError> {
     let deadline = Instant::now() + READ_TIMEOUT;
     let mut stream = connect(path, deadline, &interrupted)?;
-    if let Err(err) = stream.set_nonblocking(true) {
+    // Wait inside the kernel up to POLL_INTERVAL so a large bounded response
+    // is not stalled by a full sleep after every short socket-buffer fill.
+    if let Err(err) = stream.set_read_timeout(Some(POLL_INTERVAL)) {
+        return Err(
+            Error::herdr_transport(format!("failed to configure the Herdr socket: {err}")).into(),
+        );
+    }
+    if let Err(err) = stream.set_write_timeout(Some(POLL_INTERVAL)) {
         return Err(
             Error::herdr_transport(format!("failed to configure the Herdr socket: {err}")).into(),
         );
@@ -111,7 +118,7 @@ fn write_request(
                 return Err(Error::herdr_transport("Herdr socket closed while sending").into());
             }
             Ok(n) => written += n,
-            Err(err) if would_block(&err) => thread::sleep(POLL_INTERVAL),
+            Err(err) if would_block(&err) => {}
             Err(_) => {
                 return Err(
                     Error::herdr_transport("failed to write the pane focus request").into(),
@@ -162,7 +169,7 @@ fn read_response(
                     );
                 }
             }
-            Err(err) if would_block(&err) => thread::sleep(POLL_INTERVAL),
+            Err(err) if would_block(&err) => {}
             Err(_) => {
                 return Err(
                     Error::herdr_transport("failed to read the pane focus response").into(),
@@ -175,7 +182,7 @@ fn read_response(
 fn would_block(err: &io::Error) -> bool {
     matches!(
         err.kind(),
-        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted | io::ErrorKind::TimedOut
     )
 }
 
