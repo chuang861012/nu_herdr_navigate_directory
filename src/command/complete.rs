@@ -104,15 +104,7 @@ fn complete_directory(
     if engine.interrupted() {
         return None;
     }
-    complete_from_ready(
-        engine,
-        typed,
-        span,
-        &live,
-        &session,
-        halt_herdr,
-        halt_overall,
-    )
+    complete_from_ready(engine, typed, span, live, session, halt_herdr, halt_overall)
 }
 
 struct PreparedCompletion {
@@ -162,8 +154,8 @@ fn complete_from_ready(
     engine: &impl CallerEngine,
     typed: &str,
     span: Option<Span>,
-    live: &LiveCaller,
-    session: &Session,
+    live: LiveCaller,
+    session: Session,
     halt_herdr: impl Fn() -> bool,
     halt_overall: impl Fn() -> bool,
 ) -> Option<Vec<DynamicSuggestion>> {
@@ -172,8 +164,6 @@ fn complete_from_ready(
     }
     let engine_worker = engine.clone();
     let typed_owned = typed.to_string();
-    let live = live.clone();
-    let session = session.clone();
     let (prepared, semantic_suggestions) = match run_bounded(&halt_herdr, move || {
         let prepared = prepare_semantic(&engine_worker, &typed_owned, &live, &session)?;
         let suggestions = suggestions_from(&prepared, &[], span)?;
@@ -633,7 +623,7 @@ esac
             panic!("expected ready inspection");
         };
         let suggestions =
-            complete_from_ready(&engine, "", None, &live, &session, || false, || false).unwrap();
+            complete_from_ready(&engine, "", None, live, session, || false, || false).unwrap();
         assert!(
             suggestions
                 .iter()
@@ -851,7 +841,7 @@ esac
             panic!("expected ready inspection");
         };
         assert!(
-            complete_from_ready(&engine, "", None, &live, &session, || false, || false).is_none()
+            complete_from_ready(&engine, "", None, live, session, || false, || false).is_none()
         );
     }
 
@@ -881,8 +871,7 @@ esac
         let overall_checks = AtomicUsize::new(0);
         let halt_overall = || overall_checks.fetch_add(1, Ordering::SeqCst) > 0;
         let suggestions =
-            complete_from_ready(&engine, "", None, &live, &session, || false, halt_overall)
-                .unwrap();
+            complete_from_ready(&engine, "", None, live, session, || false, halt_overall).unwrap();
         assert!(suggestions.iter().any(|item| {
             item.description
                 .as_deref()
@@ -917,9 +906,7 @@ esac
         else {
             panic!("expected ready inspection");
         };
-        assert!(
-            complete_from_ready(&engine, "", None, &live, &session, || false, || true).is_none()
-        );
+        assert!(complete_from_ready(&engine, "", None, live, session, || false, || true).is_none());
     }
 
     #[test]
@@ -947,7 +934,7 @@ esac
             panic!("expected ready inspection");
         };
         let suggestions =
-            complete_from_ready(&engine, "", None, &live, &session, || false, || false).unwrap();
+            complete_from_ready(&engine, "", None, live, session, || false, || false).unwrap();
         assert!(
             suggestions.iter().any(|item| item.value == "link/"),
             "expected lexical symlink insertion, got {:?}",
@@ -1003,7 +990,7 @@ esac
             panic!("expected ready inspection");
         };
         let suggestions =
-            complete_from_ready(&engine, "l", None, &live, &session, || false, || false).unwrap();
+            complete_from_ready(&engine, "l", None, live, session, || false, || false).unwrap();
         let values: Vec<_> = suggestions.iter().map(|item| item.value.as_str()).collect();
         assert!(values.contains(&"lib/"), "got {values:?}");
         assert!(values.contains(&"link/"), "got {values:?}");
@@ -1035,7 +1022,7 @@ esac
             panic!("expected ready inspection");
         };
         let suggestions =
-            complete_from_ready(&engine, "", None, &live, &session, || false, || false).unwrap();
+            complete_from_ready(&engine, "", None, live, session, || false, || false).unwrap();
         assert!(
             suggestions.iter().any(|item| item.value == "project/"),
             "same-basename symlink alias must stay selectable, got {:?}",
