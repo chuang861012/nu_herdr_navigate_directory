@@ -157,14 +157,17 @@ and when the merged set exceeds 1,000 candidates. Completion failures are
 silent.
 
 An empty argument enables session-wide Herdr discovery, with filesystem
-children read from the caller cwd. A non-empty argument is a hard physical
-prefix boundary reconstructed in the user's lexical style. Herdr candidates
-may complete multiple remaining path components; filesystem candidates remain
-direct children. A symlink to a valid directory is an eligible filesystem
-candidate: identity and deduplication use the canonical physical path, but
-matching and insertion use the lexical directory name so aliases such as
-`link/` remain selectable. Hidden path components are not revealed unless the
-user has begun typing the corresponding dot-prefixed component.
+children read from the caller cwd. Empty-argument display and insertion use
+`~/...` for paths physically under the caller's home and absolute paths
+otherwise. A non-empty argument is a hard physical prefix boundary
+reconstructed in the user's lexical style. Herdr candidates may complete
+multiple remaining path components; filesystem candidates remain direct
+children. A symlink to a valid directory is an eligible filesystem candidate:
+identity and deduplication use the canonical physical path, while a distinct
+lexical alias remains selectable. With an empty argument and multiple aliases
+for one physical directory, completion chooses the shortest terminal-safe
+display path, then lexical order. Hidden path components are not revealed
+unless the user has begun typing the corresponding dot-prefixed component.
 
 Descriptions use at most three compact segments (`source · scope · optional
 count`) and keep status and scope provenance-coupled. The plugin does not
@@ -177,9 +180,10 @@ Completion is strictly read-only. The only permitted Herdr commands are
 `herdr api snapshot` and `herdr pane current --current`, run concurrently
 under a 200 ms shared deadline that also covers plugin config and Herdr
 context reads, binary validation, path validation, and semantic candidate
-construction. The overall merged completion deadline is 250 ms. Interruption
-discards partial results and returns `None`. Completion must not call
-`pane process-info`, open the Herdr socket, mutate Herdr or caller
+construction. The overall merged completion deadline is 250 ms and covers
+filesystem enumeration, merged aggregation, and suggestion rendering.
+Interruption discards partial results and returns `None`. Completion must not
+call `pane process-info`, open the Herdr socket, mutate Herdr or caller
 environment, or perform the execution path's bounded recomputation.
 
 ## 7. Path model

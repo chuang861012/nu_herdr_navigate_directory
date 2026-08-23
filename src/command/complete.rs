@@ -77,21 +77,20 @@ fn complete_directory(
     if !platform_is_supported() || halt_overall() {
         return None;
     }
-    let engine_for_config = engine.clone();
-    match run_bounded(&halt_herdr, move || {
-        dynamic_completion_enabled(engine_for_config.plugin_config())
+    let engine_worker = engine.clone();
+    let context = match run_bounded(&halt_herdr, move || {
+        if !dynamic_completion_enabled(engine_worker.plugin_config()) {
+            return None;
+        }
+        match read_herdr_mode(&engine_worker) {
+            Ok(HerdrMode::Inside(context)) => Some(context),
+            _ => None,
+        }
     }) {
-        Ok(true) => {}
-        _ => return None,
-    }
-    if halt_herdr() {
-        return None;
-    }
-    let context = match read_herdr_mode(engine) {
-        Ok(HerdrMode::Inside(context)) => context,
+        Ok(Some(context)) => context,
         _ => return None,
     };
-    if halt_herdr() {
+    if engine.interrupted() {
         return None;
     }
     let remaining = herdr_deadline.saturating_duration_since(Instant::now());
@@ -116,6 +115,7 @@ fn complete_directory(
     )
 }
 
+#[derive(Clone)]
 struct PreparedCompletion {
     caller_cwd: CanonicalPath,
     home: Option<CanonicalPath>,
@@ -168,7 +168,7 @@ fn complete_from_ready(
     halt_herdr: impl Fn() -> bool,
     halt_overall: impl Fn() -> bool,
 ) -> Option<Vec<DynamicSuggestion>> {
-    if engine.interrupted() {
+    if engine.interrupted() || halt_overall() {
         return None;
     }
     let engine_worker = engine.clone();
@@ -185,43 +185,74 @@ fn complete_from_ready(
         return None;
     }
 
+    let prepared_semantic = prepared.clone();
+    let semantic_suggestions = match run_bounded(&halt_herdr, move || {
+        suggestions_from(&prepared_semantic, Vec::new(), span, &HashMap::new())
+    }) {
+        Ok(Some(suggestions)) => suggestions,
+        _ => return None,
+    };
+    if engine.interrupted() {
+        return None;
+    }
+
     let filesystem = filesystem_candidates(
         &prepared.prefix,
         prepared.bound.as_ref(),
         &prepared.caller_cwd,
-        halt_overall,
+        &halt_overall,
     );
     if engine.interrupted() {
         return None;
+    }
+    if filesystem.is_empty() {
+        return Some(semantic_suggestions);
     }
 
     let mut aliases: HashMap<CanonicalPath, Vec<String>> = HashMap::new();
     for (path, name) in &filesystem {
         aliases.entry(path.clone()).or_default().push(name.clone());
     }
-    let fs_paths = filesystem.into_iter().map(|(path, _)| path);
-    let candidates = merge_candidates(prepared.semantic, fs_paths, &prepared.caller_cwd)?;
-    if engine.interrupted() {
-        return None;
+    let fs_paths: Vec<_> = filesystem.into_iter().map(|(path, _)| path).collect();
+    match run_bounded(&halt_overall, move || {
+        suggestions_from(&prepared, fs_paths, span, &aliases)
+    }) {
+        Ok(Some(suggestions)) => {
+            if engine.interrupted() {
+                None
+            } else {
+                Some(suggestions)
+            }
+        }
+        Ok(None) => None,
+        Err(_) if engine.interrupted() => None,
+        Err(_) => Some(semantic_suggestions),
     }
-    let suggestions: Vec<_> = candidates
-        .into_iter()
-        .map(|candidate| {
-            let names = aliases.get(&candidate.path).cloned().unwrap_or_default();
-            to_suggestion(
-                candidate,
-                &prepared.prefix,
-                prepared.bound.as_ref(),
-                prepared.home.as_ref(),
-                span,
-                &names,
-            )
-        })
-        .collect();
-    if engine.interrupted() {
-        return None;
-    }
-    Some(suggestions)
+}
+
+fn suggestions_from(
+    prepared: &PreparedCompletion,
+    filesystem: Vec<CanonicalPath>,
+    span: Option<Span>,
+    aliases: &HashMap<CanonicalPath, Vec<String>>,
+) -> Option<Vec<DynamicSuggestion>> {
+    let candidates = merge_candidates(prepared.semantic.clone(), filesystem, &prepared.caller_cwd)?;
+    Some(
+        candidates
+            .into_iter()
+            .map(|candidate| {
+                let names = aliases.get(&candidate.path).cloned().unwrap_or_default();
+                to_suggestion(
+                    candidate,
+                    &prepared.prefix,
+                    prepared.bound.as_ref(),
+                    prepared.home.as_ref(),
+                    span,
+                    &names,
+                )
+            })
+            .collect(),
+    )
 }
 
 fn filesystem_candidates(
@@ -281,7 +312,7 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -293,6 +324,7 @@ mod tests {
         interrupted: Arc<AtomicBool>,
         config_delay: Duration,
         cwd_delay: Duration,
+        env_delay: Duration,
     }
 
     impl FakeEngine {
@@ -304,6 +336,7 @@ mod tests {
                 interrupted: Arc::new(AtomicBool::new(false)),
                 config_delay: Duration::ZERO,
                 cwd_delay: Duration::ZERO,
+                env_delay: Duration::ZERO,
             }
         }
 
@@ -343,10 +376,16 @@ mod tests {
         }
 
         fn env_var(&self, name: &str) -> Result<Option<Value>, Error> {
+            if !self.env_delay.is_zero() {
+                thread::sleep(self.env_delay);
+            }
             Ok(self.env.get(name).cloned())
         }
 
         fn env_vars(&self) -> Result<HashMap<String, Value>, Error> {
+            if !self.env_delay.is_zero() {
+                thread::sleep(self.env_delay);
+            }
             Ok(self.env.clone())
         }
 
@@ -605,10 +644,25 @@ esac
                 .is_some_and(|text| text.contains("agent idle"))
         }));
         let caller = CanonicalPath::directory(root.path()).unwrap();
+        let docs = CanonicalPath::directory(&child).unwrap();
         assert!(
             suggestions
                 .iter()
                 .all(|item| item.value.trim_end_matches('/') != caller.as_str())
+        );
+        assert!(
+            suggestions
+                .iter()
+                .any(|item| item.value == format!("{}/", docs.as_str())),
+            "ordinary empty-prefix children must stay home-relative or absolute, got {:?}",
+            suggestions
+                .iter()
+                .map(|item| item.value.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            suggestions.iter().all(|item| item.value != "docs/"),
+            "ordinary empty-prefix children must not collapse to a relative name"
         );
         let recorded = fs::read_to_string(dir.path().join("record")).unwrap();
         assert!(recorded.contains("api snapshot"));
@@ -734,6 +788,28 @@ esac
     }
 
     #[test]
+    fn herdr_deadline_covers_caller_environment_lookup() {
+        let _cli = lock_cli();
+        let root = TempDir::new("slow-env");
+        let (snapshot, current) = snapshot_and_current(root.path().to_str().unwrap(), "");
+        let (dir, bin) = install_fake(&snapshot, &current);
+        let mut engine = enabled_inside(root.path().to_str().unwrap(), &bin);
+        engine.env_delay = Duration::from_millis(500);
+        let started = Instant::now();
+        assert!(complete_directory(&engine, "", None, Instant::now()).is_none());
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "Herdr environment lookup must honor the 200 ms Herdr deadline, elapsed {:?}",
+            started.elapsed()
+        );
+        assert!(
+            !fs::read_to_string(dir.path().join("record"))
+                .unwrap_or_default()
+                .contains("snapshot")
+        );
+    }
+
+    #[test]
     fn herdr_deadline_covers_caller_cwd_canonicalization() {
         let _cli = lock_cli();
         let root = TempDir::new("slow-cwd");
@@ -802,8 +878,11 @@ esac
         else {
             panic!("expected ready inspection");
         };
+        let overall_checks = AtomicUsize::new(0);
+        let halt_overall = || overall_checks.fetch_add(1, Ordering::SeqCst) > 0;
         let suggestions =
-            complete_from_ready(&engine, "", None, &live, &session, || false, || true).unwrap();
+            complete_from_ready(&engine, "", None, &live, &session, || false, halt_overall)
+                .unwrap();
         assert!(suggestions.iter().any(|item| {
             item.description
                 .as_deref()
@@ -813,6 +892,33 @@ esac
             suggestions
                 .iter()
                 .all(|item| item.value.trim_end_matches('/') != "docs")
+        );
+    }
+
+    #[test]
+    fn expired_overall_deadline_after_inspection_returns_none() {
+        let _cli = lock_cli();
+        let root = TempDir::new("overall-expired");
+        fs::create_dir(root.path().join("src")).unwrap();
+        let (snapshot, current) = snapshot_and_current(root.path().to_str().unwrap(), "");
+        let (_dir, bin) = install_fake(&snapshot, &current);
+        let engine = enabled_inside(root.path().to_str().unwrap(), &bin);
+        let context = crate::herdr::inside_context(
+            &bin,
+            "/tmp/nu-plugin-herdr-navigate-directory.sock",
+            "w1",
+            "w1:t1",
+            "w1:p1",
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let SessionInspection::Ready { live, session } =
+            inspect_session_concurrent(&context, Duration::from_secs(2), || false).unwrap()
+        else {
+            panic!("expected ready inspection");
+        };
+        assert!(
+            complete_from_ready(&engine, "", None, &live, &session, || false, || true).is_none()
         );
     }
 

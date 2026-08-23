@@ -45,9 +45,7 @@ fn select_insertion(
 ) -> String {
     let physical = reconstruct(prefix, candidate, bound, home);
     if prefix.empty {
-        return aliases.iter().fold(physical, |best, alias| {
-            pick_shorter(best, lexical_child(prefix, alias))
-        });
+        return select_empty_insertion(physical, candidate, prefix, aliases);
     }
     let remaining = bound.map(|bound| bound.remaining.as_str()).unwrap_or("");
     let mut best = None;
@@ -61,6 +59,25 @@ fn select_insertion(
         }
     }
     best.unwrap_or(physical)
+}
+
+fn select_empty_insertion(
+    physical: String,
+    candidate: &CanonicalPath,
+    prefix: &TypedPrefix,
+    aliases: &[String],
+) -> String {
+    let basename = candidate
+        .as_path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    aliases
+        .iter()
+        .filter(|alias| alias.as_str() != basename)
+        .fold(physical, |best, alias| {
+            pick_shorter(best, lexical_child(prefix, alias))
+        })
 }
 
 fn pick_shorter(left: String, right: String) -> String {
@@ -417,5 +434,26 @@ mod tests {
         );
         assert_eq!(suggestion.value, "link/");
         assert_eq!(suggestion.display_override.as_deref(), Some("link"));
+    }
+
+    #[test]
+    fn empty_argument_keeps_ordinary_children_home_or_absolute() {
+        let suggestion = to_suggestion(
+            CompletionCandidate {
+                path: cp("/Users/me/repo/src"),
+                description: DescriptionData {
+                    source: SourceLabel::Directory,
+                    scope: ScopeLabel::None,
+                    pane_count: 0,
+                },
+            },
+            &parse_typed_prefix(""),
+            None,
+            Some(&cp("/Users/me")),
+            None,
+            &["src".into()],
+        );
+        assert_eq!(suggestion.value, "~/repo/src/");
+        assert_eq!(suggestion.display_override.as_deref(), Some("~/repo/src"));
     }
 }
