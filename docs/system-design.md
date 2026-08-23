@@ -8,11 +8,11 @@ Released version: 0.1.1
 
 Implementation status: Phases 1–6 are complete. Version 0.1.1 is the current
 GitHub source release. Version 0.1.0 remains available as a prior source tag.
-The source tree includes the complete `hnd` command, local quality gates, a
-non-deploying Linux/macOS GitHub Actions workflow, and source-install
-documentation. Publishing to crates.io, Homebrew, or prebuilt binaries remains
-a separate future decision. The completed 0.1.0 staged delivery record is
-archived in
+The source tree includes the complete `hnd` command, an experimental opt-in
+dynamic completion path, local quality gates, a non-deploying Linux/macOS
+GitHub Actions workflow, and source-install documentation. Publishing to
+crates.io, Homebrew, or prebuilt binaries remains a separate future decision.
+The completed 0.1.0 staged delivery record is archived in
 [Implementation Phases](archived/0.1.0/README.md). That archive is a historical
 record and must not be edited. This document remains the authoritative
 requirements and architecture specification.
@@ -38,6 +38,9 @@ repositories, create directories, or manage Herdr named sessions.
 - Choose the nearest containing workspace deterministically.
 - Fail safely when Herdr state cannot be inspected or changed with confidence.
 - Keep the decision logic pure and independently testable.
+- Offer an experimental, disabled-by-default dynamic completion path that can
+  enrich directory candidates from live Herdr workspace and pane state without
+  changing `hnd` execution.
 
 ## 3. Non-goals
 
@@ -45,7 +48,9 @@ The initial version does not provide:
 
 - cross-session Herdr navigation;
 - Windows support;
-- configuration options;
+- execution configuration options or command flags;
+- plugin-controlled completion ranking, caching, or fuzzy search;
+- shell idle detection during completion;
 - fuzzy matching, bookmarks, history, or zoxide-style ranking;
 - `hnd` with no argument, `cd -`, globs, multiple paths, flags, or pipeline
   input;
@@ -108,14 +113,69 @@ an unexpected result kind, or a mismatched resource ID are protocol errors.
 The signature is conceptually:
 
 ```nu
-hnd <path: filepath> -> nothing
+hnd <path: directory> -> nothing
 ```
 
-`path` is one required `SyntaxShape::Filepath` positional argument. The command
+`path` is one required `SyntaxShape::Directory` positional argument. The command
 accepts relative paths, absolute paths, `~`, `~/...`, and paths containing
 spaces. Successful calls are silent and return Nushell `nothing`.
 
 The command has no flags and accepts no pipeline input in the initial version.
+The directory shape matches the command's directory-only contract and gives
+disabled or fallback completion the native Nushell directory completer.
+
+### 6.1 Experimental dynamic completion
+
+Dynamic completion is experimental and disabled by default. Users enable it
+through Nushell's plugin-specific configuration:
+
+```nu
+$env.config.plugins.herdr_navigate_directory = {
+  dynamic_completion: true
+}
+```
+
+A missing plugin config, a missing `dynamic_completion` key, any value other
+than the boolean `true`, or a config-read failure disables the feature and
+returns `None` so native directory completion can run. The setting changes
+completion only. It never changes `hnd` execution.
+
+When enabled inside Herdr, completion may merge:
+
+- every valid workspace root in the current session;
+- every valid pane `foreground_cwd` in the current session;
+- direct filesystem child directories at the typed prefix location.
+
+Completion is a best-effort path-discovery interface. It is not a preview of
+the action a later `hnd` invocation will take. Execution re-reads and
+validates all state before changing directory, focusing a pane, or creating a
+Herdr resource.
+
+Native fallback (`None`) is required outside Herdr, on any whole-Herdr
+failure, on stale caller/snapshot state, when no semantic candidate matches,
+and when the merged set exceeds 1,000 candidates. Completion failures are
+silent.
+
+An empty argument enables session-wide Herdr discovery, with filesystem
+children read from the caller cwd. A non-empty argument is a hard physical
+prefix boundary reconstructed in the user's lexical style. Herdr candidates
+may complete multiple remaining path components; filesystem candidates remain
+direct children. Hidden path components are not revealed unless the user has
+begun typing the corresponding dot-prefixed component.
+
+Descriptions use at most three compact segments (`source · scope · optional
+count`) and keep status and scope provenance-coupled. The plugin does not
+rank or sort candidates. Nushell 0.115 may cache plugin dynamic completion
+results; the plugin itself implements no cache. Users should put the opt-in
+in `config.nu` and start a new session. Documentation must not require
+disabling the global completion cache.
+
+Completion is strictly read-only. The only permitted Herdr commands are
+`herdr api snapshot` and `herdr pane current --current`, run concurrently
+under a 200 ms shared deadline. The overall merged completion deadline is
+250 ms. Completion must not call `pane process-info`, open the Herdr socket,
+mutate Herdr or caller environment, or perform the execution path's
+bounded recomputation.
 
 ## 7. Path model
 
@@ -369,15 +429,18 @@ The implementation is synchronous and stateless, with three narrow layers.
 - path containment and workspace-depth comparison;
 - idle eligibility from already collected evidence;
 - deterministic candidate ranking;
-- the pure decision function that produces an `Action`.
+- the pure decision function that produces an `Action`;
+- pure completion evidence, canonical candidate identity, prefix and hidden
+  eligibility, and provenance-safe description data.
 
 ### 13.2 `herdr`
 
 - exact binary and socket validation;
 - CLI subprocess execution and timeout handling;
 - typed JSON request and response handling;
-- session snapshot and current-caller retrieval;
-- candidate `process-info` inspection;
+- session snapshot and current-caller retrieval, including concurrent
+  read-only inspection with an explicit deadline for completion;
+- candidate `process-info` inspection for execution only;
 - exact-pane focus through the socket;
 - tab and workspace creation.
 
@@ -388,7 +451,10 @@ The implementation is synchronous and stateless, with three narrow layers.
 - path resolution and error spans;
 - orchestration of inspect, decide, recheck, and act;
 - caller `$env.PWD` update;
-- conversion to Nushell `LabeledError` and `nothing`.
+- conversion to Nushell `LabeledError` and `nothing`;
+- experimental plugin-config decoding and `get_dynamic_completion` for
+  positional argument zero, including lexical prefix reconstruction, direct
+  filesystem enumeration, and silent fallback.
 
 No generic command framework, async runtime, or global mutable state is
 required.
@@ -489,6 +555,8 @@ or workspace focus.
 | Snapshot, caller lookup, pane inspection, focus | 2 seconds each |
 | Tab or workspace creation | 5 seconds each |
 | Entire `hnd` invocation | 10 seconds total |
+| Completion Herdr enrichment, including snapshot and live caller | 200 milliseconds shared |
+| Entire merged completion request | 250 milliseconds |
 
 The total deadline starts at command entry and is a hard maximum covering path
 resolution, Herdr context and binary validation, Herdr I/O, and the one
@@ -572,7 +640,11 @@ Herdr is the only mode that unconditionally uses ordinary directory change.
   fields fail closed.
 - The plugin never deletes, closes, moves, or overwrites an existing Herdr
   resource.
-- The plugin never writes files or persistent state during `hnd` execution.
+- The plugin never writes files or persistent state during `hnd` execution
+  or dynamic completion.
+- Dynamic completion is read-only: it may run only `herdr api snapshot` and
+  `herdr pane current --current`, and must never call `process-info`, connect
+  to the Herdr socket, or mutate caller environment.
 
 ## 19. Verification strategy
 
@@ -625,13 +697,25 @@ A temporary fake Unix socket server verifies:
 
 Focused tests verify:
 
-- the `hnd <path: filepath>` signature;
+- the `hnd <path: directory>` signature;
 - caller cwd and environment access through `EngineInterface` boundaries;
 - canonical `$env.PWD` mutation only for `ChangeDirectory`;
 - `nothing` on success;
-- correct `LabeledError` spans and categories.
+- correct `LabeledError` spans and categories;
+- experimental dynamic-completion opt-in, native fallback, lexical
+  reconstruction, and suggestion rendering.
 
-### 19.5 Optional end-to-end validation
+### 19.5 Dynamic completion tests
+
+Pure table tests cover evidence aggregation, canonical deduplication,
+provenance coupling, prefix and hidden-path rules, and caller-cwd exclusion.
+Fake CLI tests cover concurrent snapshot and live-caller reads, the shared
+200 ms deadline, stale-state fallback without recomputation, and proof that
+completion never calls `process-info` or mutation commands. The compiled
+plugin protocol test verifies the directory signature and that disabled
+dynamic completion returns native fallback.
+
+### 19.6 Optional end-to-end validation
 
 Manual or separately opted-in tests may use real supported Nushell and Herdr
 versions. They are not required for the normal test suite or CI because they
@@ -697,6 +781,10 @@ Implementation was divided into six independently reviewable phases:
 4. Herdr focus and creation actions;
 5. complete `hnd` orchestration and resilience;
 6. quality gates, CI, and source distribution readiness.
+
+After 0.1.1, experimental dynamic completion adds plugin-config decoding,
+concurrent read-only Herdr inspection, and `get_dynamic_completion` without
+changing the approved navigation decision tree.
 
 Each phase had explicit prerequisites, work items, verification, a user
 confirmation gate, and out-of-scope boundaries. The completed 0.1.0 phase
