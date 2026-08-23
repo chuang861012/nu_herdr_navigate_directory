@@ -134,17 +134,22 @@ pub(crate) fn semantic_path_allowed(
     }
     match bound {
         None => !has_untyped_hidden_component(path),
-        Some(bound) => matches_bound(path, bound, false),
+        Some(bound) => matches_bound(path, bound),
     }
 }
 
-/// Keep a filesystem child that is a direct child of the prefix base.
+/// Keep a filesystem child whose lexical directory name matches the prefix.
+///
+/// Eligibility uses the directory entry name, not the canonical physical suffix,
+/// so a symlink alias such as `link -> /mnt/project` remains selectable as `link/`.
+/// Direct-child-only enumeration is the caller's responsibility.
 pub(crate) fn filesystem_path_allowed(
     path: &CanonicalPath,
+    name: &str,
     caller_cwd: &CanonicalPath,
     bound: &PrefixBound,
 ) -> bool {
-    path != caller_cwd && matches_bound(path, bound, true)
+    path != caller_cwd && matches_filesystem_name(name, bound)
 }
 
 /// Merge semantic and filesystem evidence. `None` means native fallback.
@@ -206,15 +211,11 @@ fn has_untyped_hidden_component(path: &CanonicalPath) -> bool {
     })
 }
 
-fn matches_bound(path: &CanonicalPath, bound: &PrefixBound, filesystem: bool) -> bool {
+fn matches_bound(path: &CanonicalPath, bound: &PrefixBound) -> bool {
     let Some(suffix) = path.relative_components(&bound.base) else {
         return false;
     };
-    if filesystem {
-        if suffix.len() != 1 {
-            return false;
-        }
-    } else if suffix.is_empty() {
+    if suffix.is_empty() {
         return bound.remaining.is_empty();
     }
     let Some(first) = suffix.first() else {
@@ -229,6 +230,16 @@ fn matches_bound(path: &CanonicalPath, bound: &PrefixBound, filesystem: bool) ->
     suffix[1..]
         .iter()
         .all(|component| !is_hidden_component(component))
+}
+
+fn matches_filesystem_name(name: &str, bound: &PrefixBound) -> bool {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return false;
+    }
+    if is_hidden_component(name) && !bound.remaining.starts_with('.') {
+        return false;
+    }
+    name.starts_with(&bound.remaining)
 }
 
 fn insert_evidence(
@@ -827,13 +838,57 @@ mod tests {
         ));
         assert!(!filesystem_path_allowed(
             &cp("/home/me/src/hc-v2/crates"),
+            "crates",
             &caller,
             &prefix
         ));
         assert!(filesystem_path_allowed(
             &cp("/home/me/src/hc-v2"),
+            "hc-v2",
             &caller,
             &prefix
+        ));
+        assert!(!filesystem_path_allowed(
+            &cp("/home/me/src/HC-v2"),
+            "HC-v2",
+            &caller,
+            &prefix
+        ));
+    }
+
+    #[test]
+    fn filesystem_matching_uses_lexical_name_not_canonical_suffix() {
+        let caller = cp("/repo");
+        let under_repo = bound("/repo", "l");
+        assert!(filesystem_path_allowed(
+            &cp("/mnt/project"),
+            "link",
+            &caller,
+            &under_repo
+        ));
+        assert!(!filesystem_path_allowed(
+            &cp("/mnt/project"),
+            "link",
+            &caller,
+            &bound("/repo", "x")
+        ));
+        assert!(!filesystem_path_allowed(
+            &cp("/repo/real"),
+            "link",
+            &caller,
+            &bound("/repo", "r")
+        ));
+        assert!(filesystem_path_allowed(
+            &cp("/repo/real"),
+            "link",
+            &caller,
+            &under_repo
+        ));
+        assert!(!filesystem_path_allowed(
+            &cp("/repo"),
+            "link",
+            &caller,
+            &under_repo
         ));
     }
 
@@ -878,10 +933,23 @@ mod tests {
             &caller,
             Some(&bound("/home/me/src", "h"))
         ));
-        assert!(!filesystem_path_allowed(
-            &cp("/home/me/src"),
+        assert!(filesystem_path_allowed(
+            &cp("/home/me/src/docs"),
+            "docs",
             &caller,
             &bound("/home/me/src", "")
+        ));
+        assert!(!filesystem_path_allowed(
+            &cp("/home/me/src/.git"),
+            ".git",
+            &caller,
+            &bound("/home/me/src", "")
+        ));
+        assert!(filesystem_path_allowed(
+            &cp("/home/me/src/.git"),
+            ".git",
+            &caller,
+            &bound("/home/me/src", ".g")
         ));
     }
 

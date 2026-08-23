@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dynamic completion quotes apostrophes as Nushell 0.115 literals, so
+  selecting a path such as `it's/` inserts the original directory.
+- Dynamic completion keeps symlink directory names as selectable lexical
+  aliases instead of rewriting them to their canonical targets.
+- Dynamic completion applies the 200 ms Herdr and 250 ms overall deadlines
+  through config, path lookup, aggregation, and rendering. Interruption after
+  filesystem enumeration discards the request instead of returning
+  suggestions.
 - Install docs now register the plugin with the installed binary path. `plugin
   add` searches the current directory and `NU_PLUGIN_DIRS`, not `PATH`.
 

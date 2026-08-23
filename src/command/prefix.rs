@@ -99,6 +99,11 @@ pub(crate) fn reconstruct(
     join_lexical(&prefix.lexical_parent, &suffix)
 }
 
+/// Reconstruct a direct filesystem child using its lexical directory name.
+pub(crate) fn lexical_child(prefix: &TypedPrefix, name: &str) -> String {
+    join_lexical(&prefix.lexical_parent, &[name.to_string()])
+}
+
 fn empty_display(path: &CanonicalPath, home: Option<&CanonicalPath>) -> String {
     if let Some(home) = home
         && let Some(suffix) = path.relative_components(home)
@@ -148,7 +153,7 @@ fn trim_trailing_slash(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_typed_prefix, reconstruct};
+    use super::{lexical_child, parse_typed_prefix, reconstruct};
     use crate::domain::CanonicalPath;
     use crate::domain::PrefixBound;
 
@@ -248,6 +253,19 @@ mod tests {
         assert_eq!(
             reconstruct(&absolute, &cp("/tmp/foo"), Some(&bound), None),
             "/tmp/foo/"
+        );
+    }
+
+    #[test]
+    fn lexical_child_preserves_typed_parent_and_entry_name() {
+        assert_eq!(lexical_child(&parse_typed_prefix("l"), "link"), "link/");
+        assert_eq!(
+            lexical_child(&parse_typed_prefix("~/src-link/"), "api-link"),
+            "~/src-link/api-link/"
+        );
+        assert_eq!(
+            lexical_child(&parse_typed_prefix("./s"), "src-link"),
+            "./src-link/"
         );
     }
 }

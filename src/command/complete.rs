@@ -1,5 +1,6 @@
 //! Opt-in experimental dynamic completion for the `hnd` directory argument.
 
+use std::collections::HashMap;
 use std::fs;
 use std::time::{Duration, Instant};
 
@@ -7,11 +8,10 @@ use nu_plugin::DynamicCompletionCall;
 use nu_protocol::{DynamicSuggestion, Span, Value, ast::Expr, engine::ArgType};
 
 use super::display::to_suggestion;
-use super::orchestrate::check;
 use super::prefix::{TypedPrefix, parse_typed_prefix, resolve_bound};
 use super::{CallerEngine, platform_is_supported, read_herdr_mode, read_home};
 use crate::domain::{
-    CanonicalPath, PrefixBound, Session, filesystem_path_allowed, merge_candidates,
+    CanonicalPath, Evidence, PrefixBound, Session, filesystem_path_allowed, merge_candidates,
     semantic_path_allowed, session_evidence,
 };
 use crate::herdr::{
@@ -73,20 +73,27 @@ fn complete_directory(
     let overall_deadline = started + TOTAL_COMPLETION_DEADLINE;
     let herdr_deadline = started + HERDR_COMPLETION_DEADLINE;
     let halt_overall = || engine.interrupted() || Instant::now() >= overall_deadline;
+    let halt_herdr = || engine.interrupted() || Instant::now() >= herdr_deadline;
     if !platform_is_supported() || halt_overall() {
         return None;
     }
-    if !dynamic_completion_enabled(engine.plugin_config()) {
+    let engine_for_config = engine.clone();
+    match run_bounded(&halt_herdr, move || {
+        dynamic_completion_enabled(engine_for_config.plugin_config())
+    }) {
+        Ok(true) => {}
+        _ => return None,
+    }
+    if halt_herdr() {
         return None;
     }
-
-    let halt_herdr = || engine.interrupted() || Instant::now() >= herdr_deadline;
-    if check(&halt_herdr, herdr_deadline).is_err() {
-        return None;
-    }
-    let HerdrMode::Inside(context) = read_herdr_mode(engine).ok()? else {
-        return None;
+    let context = match read_herdr_mode(engine) {
+        Ok(HerdrMode::Inside(context)) => context,
+        _ => return None,
     };
+    if halt_herdr() {
+        return None;
+    }
     let remaining = herdr_deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         return None;
@@ -95,20 +102,34 @@ fn complete_directory(
         Ok(SessionInspection::Ready { live, session }) => (live, session),
         Ok(SessionInspection::Stale) | Err(_) => return None,
     };
-    if halt_herdr() {
+    if engine.interrupted() {
         return None;
     }
-    complete_from_ready(engine, typed, span, &live, &session, halt_overall)
+    complete_from_ready(
+        engine,
+        typed,
+        span,
+        &live,
+        &session,
+        halt_herdr,
+        halt_overall,
+    )
 }
 
-fn complete_from_ready(
+struct PreparedCompletion {
+    caller_cwd: CanonicalPath,
+    home: Option<CanonicalPath>,
+    prefix: TypedPrefix,
+    bound: Option<PrefixBound>,
+    semantic: Vec<(CanonicalPath, Evidence)>,
+}
+
+fn prepare_semantic(
     engine: &impl CallerEngine,
     typed: &str,
-    span: Option<Span>,
     live: &LiveCaller,
     session: &Session,
-    halt_overall: impl Fn() -> bool,
-) -> Option<Vec<DynamicSuggestion>> {
+) -> Option<PreparedCompletion> {
     let caller_cwd = CanonicalPath::directory(engine.current_dir().ok()?).ok()?;
     let home_raw = read_home(engine).ok()?;
     let home = home_raw.as_deref().and_then(CanonicalPath::try_directory);
@@ -129,15 +150,78 @@ fn complete_from_ready(
             semantic.push((path, evidence));
         }
     }
+    Some(PreparedCompletion {
+        caller_cwd,
+        home,
+        prefix,
+        bound,
+        semantic,
+    })
+}
 
-    let filesystem = filesystem_candidates(&prefix, bound.as_ref(), &caller_cwd, halt_overall);
-    let candidates = merge_candidates(semantic, filesystem, &caller_cwd)?;
-    Some(
-        candidates
-            .into_iter()
-            .map(|candidate| to_suggestion(candidate, &prefix, bound.as_ref(), home.as_ref(), span))
-            .collect(),
-    )
+fn complete_from_ready(
+    engine: &impl CallerEngine,
+    typed: &str,
+    span: Option<Span>,
+    live: &LiveCaller,
+    session: &Session,
+    halt_herdr: impl Fn() -> bool,
+    halt_overall: impl Fn() -> bool,
+) -> Option<Vec<DynamicSuggestion>> {
+    if engine.interrupted() {
+        return None;
+    }
+    let engine_worker = engine.clone();
+    let typed_owned = typed.to_string();
+    let live = live.clone();
+    let session = session.clone();
+    let prepared = match run_bounded(&halt_herdr, move || {
+        prepare_semantic(&engine_worker, &typed_owned, &live, &session)
+    }) {
+        Ok(Some(prepared)) => prepared,
+        _ => return None,
+    };
+    if engine.interrupted() {
+        return None;
+    }
+
+    let filesystem = filesystem_candidates(
+        &prepared.prefix,
+        prepared.bound.as_ref(),
+        &prepared.caller_cwd,
+        halt_overall,
+    );
+    if engine.interrupted() {
+        return None;
+    }
+
+    let mut aliases: HashMap<CanonicalPath, Vec<String>> = HashMap::new();
+    for (path, name) in &filesystem {
+        aliases.entry(path.clone()).or_default().push(name.clone());
+    }
+    let fs_paths = filesystem.into_iter().map(|(path, _)| path);
+    let candidates = merge_candidates(prepared.semantic, fs_paths, &prepared.caller_cwd)?;
+    if engine.interrupted() {
+        return None;
+    }
+    let suggestions: Vec<_> = candidates
+        .into_iter()
+        .map(|candidate| {
+            let names = aliases.get(&candidate.path).cloned().unwrap_or_default();
+            to_suggestion(
+                candidate,
+                &prepared.prefix,
+                prepared.bound.as_ref(),
+                prepared.home.as_ref(),
+                span,
+                &names,
+            )
+        })
+        .collect();
+    if engine.interrupted() {
+        return None;
+    }
+    Some(suggestions)
 }
 
 fn filesystem_candidates(
@@ -145,7 +229,7 @@ fn filesystem_candidates(
     bound: Option<&PrefixBound>,
     caller_cwd: &CanonicalPath,
     halt: impl Fn() -> bool,
-) -> Vec<CanonicalPath> {
+) -> Vec<(CanonicalPath, String)> {
     if halt() {
         return Vec::new();
     }
@@ -157,7 +241,10 @@ fn filesystem_candidates(
     run_bounded(&halt, move || read_direct_children(fs_bound, caller)).unwrap_or_default()
 }
 
-fn read_direct_children(bound: PrefixBound, caller_cwd: CanonicalPath) -> Vec<CanonicalPath> {
+fn read_direct_children(
+    bound: PrefixBound,
+    caller_cwd: CanonicalPath,
+) -> Vec<(CanonicalPath, String)> {
     let Ok(entries) = fs::read_dir(bound.base.as_path()) else {
         return Vec::new();
     };
@@ -173,8 +260,8 @@ fn read_direct_children(bound: PrefixBound, caller_cwd: CanonicalPath) -> Vec<Ca
         let Some(path) = CanonicalPath::try_directory(entry.path()) else {
             continue;
         };
-        if filesystem_path_allowed(&path, &caller_cwd, &bound) {
-            paths.push(path);
+        if filesystem_path_allowed(&path, name, &caller_cwd, &bound) {
+            paths.push((path, name.to_string()));
         }
     }
     paths
@@ -195,6 +282,7 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
     use std::time::{Duration, Instant};
 
     #[derive(Clone)]
@@ -203,6 +291,8 @@ mod tests {
         env: HashMap<String, Value>,
         config: Result<Option<Value>, Error>,
         interrupted: Arc<AtomicBool>,
+        config_delay: Duration,
+        cwd_delay: Duration,
     }
 
     impl FakeEngine {
@@ -212,6 +302,8 @@ mod tests {
                 env: HashMap::new(),
                 config: Ok(None),
                 interrupted: Arc::new(AtomicBool::new(false)),
+                config_delay: Duration::ZERO,
+                cwd_delay: Duration::ZERO,
             }
         }
 
@@ -244,6 +336,9 @@ mod tests {
         }
 
         fn current_dir(&self) -> Result<String, Error> {
+            if !self.cwd_delay.is_zero() {
+                thread::sleep(self.cwd_delay);
+            }
             Ok(self.cwd.clone())
         }
 
@@ -260,6 +355,9 @@ mod tests {
         }
 
         fn plugin_config(&self) -> Result<Option<Value>, Error> {
+            if !self.config_delay.is_zero() {
+                thread::sleep(self.config_delay);
+            }
             match &self.config {
                 Ok(value) => Ok(value.clone()),
                 Err(error) => Err(error.clone()),
@@ -397,6 +495,12 @@ esac
             .with_herdr(bin, "/tmp/nu-plugin-herdr-navigate-directory.sock")
     }
 
+    fn warmup_herdr(bin: &str) {
+        let _ = std::process::Command::new(bin)
+            .args(["api", "snapshot"])
+            .output();
+    }
+
     #[test]
     fn config_is_strict_and_disabled_by_default() {
         assert!(!dynamic_completion_enabled(Ok(None)));
@@ -444,6 +548,24 @@ esac
     }
 
     #[test]
+    fn complete_directory_returns_suggestions_when_enabled() {
+        let _cli = lock_cli();
+        let root = TempDir::new("complete-dir");
+        fs::create_dir(root.path().join("src")).unwrap();
+        let (snapshot, current) = snapshot_and_current(root.path().to_str().unwrap(), "");
+        let (_dir, bin) = install_fake(&snapshot, &current);
+        let engine = enabled_inside(root.path().to_str().unwrap(), &bin);
+        warmup_herdr(&bin);
+        let suggestions = complete_directory(&engine, "", None, Instant::now())
+            .expect("enabled in-process completion must return items");
+        assert!(suggestions.iter().any(|item| {
+            item.description
+                .as_deref()
+                .is_some_and(|text| text.contains("agent idle"))
+        }));
+    }
+
+    #[test]
     fn enabled_completion_returns_directory_suggestions() {
         let _cli = lock_cli();
         let root = TempDir::new("enabled-root");
@@ -469,7 +591,7 @@ esac
             panic!("expected ready inspection");
         };
         let suggestions =
-            complete_from_ready(&engine, "", None, &live, &session, || false).unwrap();
+            complete_from_ready(&engine, "", None, &live, &session, || false, || false).unwrap();
         assert!(
             suggestions
                 .iter()
@@ -523,11 +645,38 @@ esac
         };
         let caller = CanonicalPath::directory(root.path()).unwrap();
         let children = read_direct_children(bound, caller);
-        let unique: std::collections::HashSet<_> = children.iter().cloned().collect();
-        assert_eq!(unique.len(), 1);
+        let canonical_real = CanonicalPath::directory(&real).unwrap();
+        assert!(
+            children
+                .iter()
+                .any(|(path, name)| { path == &canonical_real && name == "real" })
+        );
+        assert!(
+            children
+                .iter()
+                .any(|(path, name)| { path == &canonical_real && name == "link" })
+        );
+        assert!(!children.iter().any(|(_, name)| name == "broken"));
+        assert!(!children.iter().any(|(_, name)| name == "file"));
+    }
+
+    #[test]
+    fn filesystem_symlink_outside_prefix_stays_a_lexical_candidate() {
+        let root = TempDir::new("outside-link");
+        let outside = TempDir::new("outside-target");
+        let linked = root.path().join("link");
+        std::os::unix::fs::symlink(outside.path(), &linked).unwrap();
+        let bound = PrefixBound {
+            base: CanonicalPath::directory(root.path()).unwrap(),
+            remaining: "l".into(),
+        };
+        let caller = CanonicalPath::directory(root.path()).unwrap();
+        let children = read_direct_children(bound, caller);
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].1, "link");
         assert_eq!(
-            unique.into_iter().next().unwrap(),
-            CanonicalPath::directory(&real).unwrap()
+            children[0].0,
+            CanonicalPath::directory(outside.path()).unwrap()
         );
     }
 
@@ -560,5 +709,198 @@ esac
             .checked_sub(Duration::from_secs(1))
             .expect("clock");
         assert!(complete_directory(&engine, "", None, started).is_none());
+    }
+
+    #[test]
+    fn herdr_deadline_covers_plugin_config_lookup() {
+        let _cli = lock_cli();
+        let root = TempDir::new("slow-config");
+        let (snapshot, current) = snapshot_and_current(root.path().to_str().unwrap(), "");
+        let (dir, bin) = install_fake(&snapshot, &current);
+        let mut engine = enabled_inside(root.path().to_str().unwrap(), &bin);
+        engine.config_delay = Duration::from_millis(500);
+        let started = Instant::now();
+        assert!(complete_directory(&engine, "", None, Instant::now()).is_none());
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "config lookup must honor the 200 ms Herdr deadline, elapsed {:?}",
+            started.elapsed()
+        );
+        assert!(
+            !fs::read_to_string(dir.path().join("record"))
+                .unwrap_or_default()
+                .contains("snapshot")
+        );
+    }
+
+    #[test]
+    fn herdr_deadline_covers_caller_cwd_canonicalization() {
+        let _cli = lock_cli();
+        let root = TempDir::new("slow-cwd");
+        fs::create_dir(root.path().join("src")).unwrap();
+        let (snapshot, current) = snapshot_and_current(root.path().to_str().unwrap(), "");
+        let (_dir, bin) = install_fake(&snapshot, &current);
+        let mut engine = enabled_inside(root.path().to_str().unwrap(), &bin);
+        engine.cwd_delay = Duration::from_millis(500);
+        let started = Instant::now();
+        assert!(complete_directory(&engine, "", None, Instant::now()).is_none());
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "cwd canonicalization must honor the 200 ms Herdr deadline, elapsed {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn interruption_after_inspection_discards_suggestions() {
+        let _cli = lock_cli();
+        let root = TempDir::new("interrupt-ready");
+        fs::create_dir(root.path().join("src")).unwrap();
+        let (snapshot, current) = snapshot_and_current(root.path().to_str().unwrap(), "");
+        let (_dir, bin) = install_fake(&snapshot, &current);
+        let engine = enabled_inside(root.path().to_str().unwrap(), &bin);
+        engine.interrupted.store(true, Ordering::Relaxed);
+        let context = crate::herdr::inside_context(
+            &bin,
+            "/tmp/nu-plugin-herdr-navigate-directory.sock",
+            "w1",
+            "w1:t1",
+            "w1:p1",
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let SessionInspection::Ready { live, session } =
+            inspect_session_concurrent(&context, Duration::from_secs(2), || false).unwrap()
+        else {
+            panic!("expected ready inspection");
+        };
+        assert!(
+            complete_from_ready(&engine, "", None, &live, &session, || false, || false).is_none()
+        );
+    }
+
+    #[test]
+    fn overall_deadline_omits_filesystem_but_keeps_semantic() {
+        let _cli = lock_cli();
+        let root = TempDir::new("overall-fs");
+        fs::create_dir(root.path().join("src")).unwrap();
+        fs::create_dir(root.path().join("docs")).unwrap();
+        let (snapshot, current) = snapshot_and_current(root.path().to_str().unwrap(), "");
+        let (_dir, bin) = install_fake(&snapshot, &current);
+        let engine = enabled_inside(root.path().to_str().unwrap(), &bin);
+        let context = crate::herdr::inside_context(
+            &bin,
+            "/tmp/nu-plugin-herdr-navigate-directory.sock",
+            "w1",
+            "w1:t1",
+            "w1:p1",
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let SessionInspection::Ready { live, session } =
+            inspect_session_concurrent(&context, Duration::from_secs(2), || false).unwrap()
+        else {
+            panic!("expected ready inspection");
+        };
+        let suggestions =
+            complete_from_ready(&engine, "", None, &live, &session, || false, || true).unwrap();
+        assert!(suggestions.iter().any(|item| {
+            item.description
+                .as_deref()
+                .is_some_and(|text| text.contains("agent idle"))
+        }));
+        assert!(
+            suggestions
+                .iter()
+                .all(|item| item.value.trim_end_matches('/') != "docs")
+        );
+    }
+
+    #[test]
+    fn symlink_alias_is_inserted_instead_of_canonical_target() {
+        let _cli = lock_cli();
+        let root = TempDir::new("alias-insert");
+        let outside = TempDir::new("alias-target");
+        fs::create_dir(root.path().join("src")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("link")).unwrap();
+        let (snapshot, current) = snapshot_and_current(root.path().to_str().unwrap(), "");
+        let (_dir, bin) = install_fake(&snapshot, &current);
+        let engine = enabled_inside(root.path().to_str().unwrap(), &bin);
+        let context = crate::herdr::inside_context(
+            &bin,
+            "/tmp/nu-plugin-herdr-navigate-directory.sock",
+            "w1",
+            "w1:t1",
+            "w1:p1",
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let SessionInspection::Ready { live, session } =
+            inspect_session_concurrent(&context, Duration::from_secs(2), || false).unwrap()
+        else {
+            panic!("expected ready inspection");
+        };
+        let suggestions =
+            complete_from_ready(&engine, "", None, &live, &session, || false, || false).unwrap();
+        assert!(
+            suggestions.iter().any(|item| item.value == "link/"),
+            "expected lexical symlink insertion, got {:?}",
+            suggestions
+                .iter()
+                .map(|item| item.value.clone())
+                .collect::<Vec<_>>()
+        );
+        let outside_path = CanonicalPath::directory(outside.path()).unwrap();
+        assert!(
+            suggestions
+                .iter()
+                .all(|item| { item.value.trim_end_matches('/') != outside_path.as_str() })
+        );
+    }
+
+    #[test]
+    fn symlink_prefix_match_uses_lexical_name_not_physical_suffix() {
+        let _cli = lock_cli();
+        let root = TempDir::new("alias-prefix");
+        fs::create_dir(root.path().join("src")).unwrap();
+        fs::create_dir(root.path().join("lib")).unwrap();
+        fs::create_dir(root.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(root.path().join("real"), root.path().join("link")).unwrap();
+        let extra = format!(
+            r#"}}, {{
+                    "pane_id": "w1:p3",
+                    "terminal_id": "term3",
+                    "workspace_id": "w1",
+                    "tab_id": "w1:t1",
+                    "focused": false,
+                    "agent_status": "idle",
+                    "revision": 3,
+                    "agent": "codex",
+                    "foreground_cwd": "{}/lib""#,
+            root.path().to_str().unwrap()
+        );
+        let (snapshot, current) = snapshot_and_current(root.path().to_str().unwrap(), &extra);
+        let (_dir, bin) = install_fake(&snapshot, &current);
+        let engine = enabled_inside(root.path().to_str().unwrap(), &bin);
+        let context = crate::herdr::inside_context(
+            &bin,
+            "/tmp/nu-plugin-herdr-navigate-directory.sock",
+            "w1",
+            "w1:t1",
+            "w1:p1",
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let SessionInspection::Ready { live, session } =
+            inspect_session_concurrent(&context, Duration::from_secs(2), || false).unwrap()
+        else {
+            panic!("expected ready inspection");
+        };
+        let suggestions =
+            complete_from_ready(&engine, "l", None, &live, &session, || false, || false).unwrap();
+        let values: Vec<_> = suggestions.iter().map(|item| item.value.as_str()).collect();
+        assert!(values.contains(&"lib/"), "got {values:?}");
+        assert!(values.contains(&"link/"), "got {values:?}");
+        assert!(!values.contains(&"real/"), "got {values:?}");
     }
 }

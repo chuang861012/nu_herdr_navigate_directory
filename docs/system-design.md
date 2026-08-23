@@ -160,8 +160,11 @@ An empty argument enables session-wide Herdr discovery, with filesystem
 children read from the caller cwd. A non-empty argument is a hard physical
 prefix boundary reconstructed in the user's lexical style. Herdr candidates
 may complete multiple remaining path components; filesystem candidates remain
-direct children. Hidden path components are not revealed unless the user has
-begun typing the corresponding dot-prefixed component.
+direct children. A symlink to a valid directory is an eligible filesystem
+candidate: identity and deduplication use the canonical physical path, but
+matching and insertion use the lexical directory name so aliases such as
+`link/` remain selectable. Hidden path components are not revealed unless the
+user has begun typing the corresponding dot-prefixed component.
 
 Descriptions use at most three compact segments (`source · scope · optional
 count`) and keep status and scope provenance-coupled. The plugin does not
@@ -172,10 +175,12 @@ disabling the global completion cache.
 
 Completion is strictly read-only. The only permitted Herdr commands are
 `herdr api snapshot` and `herdr pane current --current`, run concurrently
-under a 200 ms shared deadline. The overall merged completion deadline is
-250 ms. Completion must not call `pane process-info`, open the Herdr socket,
-mutate Herdr or caller environment, or perform the execution path's
-bounded recomputation.
+under a 200 ms shared deadline that also covers plugin config and Herdr
+context reads, binary validation, path validation, and semantic candidate
+construction. The overall merged completion deadline is 250 ms. Interruption
+discards partial results and returns `None`. Completion must not call
+`pane process-info`, open the Herdr socket, mutate Herdr or caller
+environment, or perform the execution path's bounded recomputation.
 
 ## 7. Path model
 
@@ -555,7 +560,7 @@ or workspace focus.
 | Snapshot, caller lookup, pane inspection, focus | 2 seconds each |
 | Tab or workspace creation | 5 seconds each |
 | Entire `hnd` invocation | 10 seconds total |
-| Completion Herdr enrichment, including snapshot and live caller | 200 milliseconds shared |
+| Completion Herdr enrichment, including config/context reads, binary validation, snapshot, live caller, path validation, and semantic construction | 200 milliseconds shared |
 | Entire merged completion request | 250 milliseconds |
 
 The total deadline starts at command entry and is a hard maximum covering path
@@ -712,8 +717,10 @@ provenance coupling, prefix and hidden-path rules, and caller-cwd exclusion.
 Fake CLI tests cover concurrent snapshot and live-caller reads, the shared
 200 ms deadline, stale-state fallback without recomputation, and proof that
 completion never calls `process-info` or mutation commands. The compiled
-plugin protocol test verifies the directory signature and that disabled
-dynamic completion returns native fallback.
+plugin protocol test verifies the directory signature, that disabled
+dynamic completion returns native fallback, and that enabled completion
+returns structured directory suggestions through the SDK completion call
+path.
 
 ### 19.6 Optional end-to-end validation
 

@@ -1,8 +1,10 @@
 //! Quoting, terminal-safe display, and suggestion rendering.
 
+use std::cmp::Ordering;
+
 use nu_protocol::{DynamicSuggestion, Span, SuggestionKind};
 
-use super::prefix::{TypedPrefix, reconstruct};
+use super::prefix::{TypedPrefix, lexical_child, reconstruct};
 use crate::domain::{
     CanonicalPath, CompletionCandidate, DescriptionData, PrefixBound, ScopeLabel, SourceLabel,
 };
@@ -13,8 +15,9 @@ pub(crate) fn to_suggestion(
     bound: Option<&PrefixBound>,
     home: Option<&CanonicalPath>,
     span: Option<Span>,
+    aliases: &[String],
 ) -> DynamicSuggestion {
-    let lexical = reconstruct(prefix, &candidate.path, bound, home);
+    let lexical = select_insertion(&candidate.path, prefix, bound, home, aliases);
     let display = escape_display(lexical.trim_end_matches('/'));
     let value = if needs_quoting(&lexical) {
         quote_nu(&lexical)
@@ -30,6 +33,45 @@ pub(crate) fn to_suggestion(
         match_indices: None,
         span,
         kind: Some(SuggestionKind::Directory),
+    }
+}
+
+fn select_insertion(
+    candidate: &CanonicalPath,
+    prefix: &TypedPrefix,
+    bound: Option<&PrefixBound>,
+    home: Option<&CanonicalPath>,
+    aliases: &[String],
+) -> String {
+    let physical = reconstruct(prefix, candidate, bound, home);
+    if prefix.empty {
+        return aliases.iter().fold(physical, |best, alias| {
+            pick_shorter(best, lexical_child(prefix, alias))
+        });
+    }
+    let remaining = bound.map(|bound| bound.remaining.as_str()).unwrap_or("");
+    let mut best = None;
+    for alias in aliases {
+        if alias.starts_with(remaining) {
+            let value = lexical_child(prefix, alias);
+            best = Some(match best {
+                Some(current) => pick_shorter(current, value),
+                None => value,
+            });
+        }
+    }
+    best.unwrap_or(physical)
+}
+
+fn pick_shorter(left: String, right: String) -> String {
+    let left_display = escape_display(&left);
+    let right_display = escape_display(&right);
+    match (
+        left_display.len().cmp(&right_display.len()),
+        left.cmp(&right),
+    ) {
+        (Ordering::Less, _) | (Ordering::Equal, Ordering::Less | Ordering::Equal) => left,
+        (Ordering::Greater, _) | (Ordering::Equal, Ordering::Greater) => right,
     }
 }
 
@@ -108,7 +150,29 @@ fn needs_quoting(path: &str) -> bool {
 }
 
 fn quote_nu(path: &str) -> String {
-    format!("'{}'", path.replace('\'', "''"))
+    if !path.contains('\'') {
+        format!("'{path}'")
+    } else if double_quote_is_literal(path) {
+        format!("\"{path}\"")
+    } else {
+        raw_quote(path)
+    }
+}
+
+fn double_quote_is_literal(path: &str) -> bool {
+    !path.contains(['\\', '"']) && !path.chars().any(char::is_control)
+}
+
+fn raw_quote(path: &str) -> String {
+    let mut hashes = 1;
+    loop {
+        let marks = "#".repeat(hashes);
+        let closer = format!("'{marks}");
+        if !path.contains(&closer) {
+            return format!("r{marks}'{path}'{marks}");
+        }
+        hashes += 1;
+    }
 }
 
 fn is_unsafe_display_char(c: char) -> bool {
@@ -132,7 +196,7 @@ mod tests {
     use super::{escape_display, needs_quoting, quote_nu, render_description, to_suggestion};
     use crate::command::prefix::parse_typed_prefix;
     use crate::domain::{
-        CanonicalPath, CompletionCandidate, DescriptionData, ScopeLabel, SourceLabel,
+        CanonicalPath, CompletionCandidate, DescriptionData, PrefixBound, ScopeLabel, SourceLabel,
     };
     use nu_protocol::{Span, SuggestionKind};
 
@@ -146,7 +210,10 @@ mod tests {
         assert!(needs_quoting("foo$bar/"));
         assert!(!needs_quoting("~/src/"));
         assert_eq!(quote_nu("foo bar/"), "'foo bar/'");
-        assert_eq!(quote_nu("it's/"), "'it''s/'");
+        assert_eq!(quote_nu("it's/"), r#""it's/""#);
+        assert_eq!(quote_nu(r"it's\foo/"), "r#'it's\\foo/'#");
+        assert_eq!(quote_nu("it'\"s/"), "r#'it'\"s/'#");
+        assert_eq!(quote_nu("foo'#\\bar/"), "r##'foo'#\\bar/'##");
     }
 
     #[test]
@@ -255,6 +322,7 @@ mod tests {
             None,
             Some(&cp("/Users/me")),
             Some(Span::test_data()),
+            &[],
         );
         assert_eq!(suggestion.kind, Some(SuggestionKind::Directory));
         assert!(suggestion.value.ends_with('/'));
@@ -279,8 +347,75 @@ mod tests {
             None,
             Some(&cp("/Users/me")),
             None,
+            &[],
         );
         assert_eq!(suggestion.value, "'~/my dir/'");
         assert_eq!(suggestion.display_override.as_deref(), Some("~/my dir"));
+    }
+
+    #[test]
+    fn apostrophe_paths_round_trip_as_nushell_literals() {
+        let suggestion = to_suggestion(
+            CompletionCandidate {
+                path: cp("/Users/me/it's"),
+                description: DescriptionData {
+                    source: SourceLabel::Directory,
+                    scope: ScopeLabel::None,
+                    pane_count: 0,
+                },
+            },
+            &parse_typed_prefix(""),
+            None,
+            Some(&cp("/Users/me")),
+            None,
+            &[],
+        );
+        assert_eq!(suggestion.value, r#""~/it's/""#);
+        assert_eq!(suggestion.display_override.as_deref(), Some("~/it's"));
+    }
+
+    #[test]
+    fn filesystem_symlink_alias_is_selected_for_typed_prefix() {
+        let suggestion = to_suggestion(
+            CompletionCandidate {
+                path: cp("/mnt/project"),
+                description: DescriptionData {
+                    source: SourceLabel::Directory,
+                    scope: ScopeLabel::None,
+                    pane_count: 0,
+                },
+            },
+            &parse_typed_prefix("l"),
+            Some(&PrefixBound {
+                base: cp("/repo"),
+                remaining: "l".into(),
+            }),
+            None,
+            None,
+            &["link".into()],
+        );
+        assert_eq!(suggestion.value, "link/");
+        assert_eq!(suggestion.display_override.as_deref(), Some("link"));
+    }
+
+    #[test]
+    fn empty_argument_prefers_shortest_alias_over_physical_path() {
+        let suggestion = to_suggestion(
+            CompletionCandidate {
+                path: cp("/mnt/project"),
+                description: DescriptionData {
+                    source: SourceLabel::Directory,
+                    scope: ScopeLabel::None,
+                    pane_count: 0,
+                },
+            },
+            &parse_typed_prefix(""),
+            None,
+            Some(&cp("/Users/me")),
+            None,
+            &["link".into()],
+        );
+        assert_eq!(suggestion.value, "link/");
+        assert_eq!(suggestion.display_override.as_deref(), Some("link"));
     }
 }

@@ -9,7 +9,7 @@ mod path;
 mod types;
 
 pub(crate) use completion::{
-    CompletionCandidate, DescriptionData, PrefixBound, ScopeLabel, SourceLabel,
+    CompletionCandidate, DescriptionData, Evidence, PrefixBound, ScopeLabel, SourceLabel,
     filesystem_path_allowed, merge_candidates, semantic_path_allowed, session_evidence,
 };
 pub(crate) use decision::{decide, nearest_containing_workspace};
