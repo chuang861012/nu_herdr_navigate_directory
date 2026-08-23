@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** renamed the repository to `nu_herdr_navigate_directory`, the
+  Cargo package and binary to `nu_plugin_herdr_navigate_directory`, the
+  Nushell plugin identity to `herdr_navigate_directory`, and the public
+  command from `hcd` to `hnd`. Existing installs must reinstall the new
+  binary, then `plugin add` it and `plugin use herdr_navigate_directory`.
+
 ### Fixed
 
 - Install docs now register the plugin with the installed binary path. `plugin
@@ -32,6 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and returns nothing. Requires Nushell 0.115 and, inside a Herdr session,
   Herdr 0.8.2 or later.
 
-[Unreleased]: https://github.com/chuang861012/nu_herdr_cd/compare/0.1.1...HEAD
-[0.1.1]: https://github.com/chuang861012/nu_herdr_cd/compare/0.1.0...0.1.1
-[0.1.0]: https://github.com/chuang861012/nu_herdr_cd/releases/tag/0.1.0
+[Unreleased]: https://github.com/chuang861012/nu_herdr_navigate_directory/compare/0.1.1...HEAD
+[0.1.1]: https://github.com/chuang861012/nu_herdr_navigate_directory/compare/0.1.0...0.1.1
+[0.1.0]: https://github.com/chuang861012/nu_herdr_navigate_directory/releases/tag/0.1.0

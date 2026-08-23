@@ -1,4 +1,4 @@
-//! Inspect, decide, recheck, and act for one `hcd` invocation.
+//! Inspect, decide, recheck, and act for one `hnd` invocation.
 
 use std::time::Instant;
 
@@ -11,7 +11,7 @@ use crate::herdr::{
     exact_path_shell_candidates, focus_pane, inspect_process, inspect_session,
 };
 
-/// Entire `hcd` invocation deadline, including the one allowed recomputation.
+/// Entire `hnd` invocation deadline, including the one allowed recomputation.
 pub(crate) const TOTAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Side effect visible at the Nushell boundary after Herdr work completes.
@@ -36,7 +36,7 @@ enum Executed {
     NeedRecompute,
 }
 
-/// Run the approved outside/inside `hcd` loop. Path resolution is already done.
+/// Run the approved outside/inside `hnd` loop. Path resolution is already done.
 pub(crate) fn orchestrate(
     paths: &ResolvedPaths,
     mode: &HerdrMode,
@@ -229,7 +229,7 @@ pub(crate) fn check(interrupted: &dyn Fn() -> bool, deadline: Instant) -> Result
         Err(RunError::Interrupted)
     } else if Instant::now() >= deadline {
         Err(RunError::Failed(Error::herdr_timeout(
-            "hcd exceeded the 10-second deadline",
+            "hnd exceeded the 10-second deadline",
         )))
     } else {
         Ok(())
@@ -240,7 +240,7 @@ pub(crate) fn map_halt(error: RunError, interrupted: &dyn Fn() -> bool) -> RunEr
     match error {
         RunError::Interrupted if interrupted() => RunError::Interrupted,
         RunError::Interrupted => {
-            RunError::Failed(Error::herdr_timeout("hcd exceeded the 10-second deadline"))
+            RunError::Failed(Error::herdr_timeout("hnd exceeded the 10-second deadline"))
         }
         other => other,
     }

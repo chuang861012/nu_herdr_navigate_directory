@@ -22,8 +22,9 @@ pub(crate) struct TempDir {
 
 impl TempDir {
     pub(crate) fn new(label: &str) -> Self {
+        // Keep names short: macOS Unix socket paths must fit in sockaddr_un.sun_path.
         let path = std::env::temp_dir().join(format!(
-            "nu_plugin_herdr_cd-{label}-{}-{}",
+            "hnd-{label}-{}-{}",
             std::process::id(),
             NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
         ));

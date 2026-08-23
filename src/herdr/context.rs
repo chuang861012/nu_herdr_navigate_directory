@@ -160,7 +160,7 @@ mod tests {
     impl TempDir {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "nu_plugin_herdr_cd-herdr-ctx-{}-{}",
+                "hnd-herdr-ctx-{}-{}",
                 std::process::id(),
                 NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
             ));

@@ -1,4 +1,4 @@
-# `nu_herdr_cd` System Design
+# `nu_herdr_navigate_directory` System Design
 
 Status: approved design baseline
 
@@ -8,7 +8,7 @@ Released version: 0.1.1
 
 Implementation status: Phases 1–6 are complete. Version 0.1.1 is the current
 GitHub source release. Version 0.1.0 remains available as a prior source tag.
-The source tree includes the complete `hcd` command, local quality gates, a
+The source tree includes the complete `hnd` command, local quality gates, a
 non-deploying Linux/macOS GitHub Actions workflow, and source-install
 documentation. Publishing to crates.io, Homebrew, or prebuilt binaries remains
 a separate future decision. The completed 0.1.0 staged delivery record is
@@ -19,8 +19,8 @@ requirements and architecture specification.
 
 ## 1. Overview
 
-`nu_herdr_cd` is a Rust Nushell plugin that exposes one command, `hcd`.
-Outside Herdr, `hcd` behaves like a deliberately small subset of `cd`. Inside
+`nu_herdr_navigate_directory` is a Rust Nushell plugin that exposes one command, `hnd`.
+Outside Herdr, `hnd` behaves like a deliberately small subset of `cd`. Inside
 Herdr, it reuses an appropriate idle pane when possible, changes the current
 pane's directory only for downward navigation, and otherwise creates or
 focuses Herdr resources according to a deterministic decision tree.
@@ -30,7 +30,7 @@ repositories, create directories, or manage Herdr named sessions.
 
 ## 2. Goals
 
-- Provide `hcd <path>` as a predictable directory-navigation command for
+- Provide `hnd <path>` as a predictable directory-navigation command for
   Nushell.
 - Reuse an idle pane at the exact target directory when the pane belongs to
   the relevant Herdr workspace.
@@ -47,7 +47,7 @@ The initial version does not provide:
 - Windows support;
 - configuration options;
 - fuzzy matching, bookmarks, history, or zoxide-style ranking;
-- `hcd` with no argument, `cd -`, globs, multiple paths, flags, or pipeline
+- `hnd` with no argument, `cd -`, globs, multiple paths, flags, or pipeline
   input;
 - `~otheruser` expansion;
 - non-UTF-8 path support;
@@ -62,11 +62,11 @@ The initial version does not provide:
 
 | Item | Name |
 | --- | --- |
-| Repository | `nu_herdr_cd` |
-| Cargo package | `nu_plugin_herdr_cd` |
-| Binary | `nu_plugin_herdr_cd` |
-| Nushell plugin identity | `herdr_cd` |
-| Public command | `hcd` |
+| Repository | `nu_herdr_navigate_directory` |
+| Cargo package | `nu_plugin_herdr_navigate_directory` |
+| Binary | `nu_plugin_herdr_navigate_directory` |
+| Nushell plugin identity | `herdr_navigate_directory` |
+| Public command | `hnd` |
 
 The crate uses Rust edition 2024 and a declared `rust-version`. As an
 application binary, it tracks `Cargo.lock`. Exact `nu-plugin` and
@@ -108,7 +108,7 @@ an unexpected result kind, or a mismatched resource ID are protocol errors.
 The signature is conceptually:
 
 ```nu
-hcd <path: filepath> -> nothing
+hnd <path: filepath> -> nothing
 ```
 
 `path` is one required `SyntaxShape::Filepath` positional argument. The command
@@ -225,11 +225,11 @@ occupant type does not introduce a hidden preference.
 - A `not_found` response means the pane disappeared and triggers the single
   allowed recomputation.
 - A timeout, transport failure, server failure, protocol error, or unexpected
-  error aborts `hcd`.
+  error aborts `hnd`.
 
 The calling pane is a special case. If the canonical target equals the
 caller's canonical cwd, the result is `NoOp` without requiring the caller to
-look idle while it is executing `hcd`.
+look idle while it is executing `hnd`.
 
 ## 10. Deterministic resource selection
 
@@ -275,7 +275,7 @@ workspace must not abort the command.
 
 ```mermaid
 flowchart TD
-    A[Receive hcd path] --> B[Resolve and canonicalize caller cwd and target]
+    A[Receive hnd path] --> B[Resolve and canonicalize caller cwd and target]
     B -->|Invalid| E1[Return path error; no state change]
     B --> C{HERDR_ENV present?}
     C -->|No| D[Set caller PWD to canonical target]
@@ -454,7 +454,7 @@ this form:
 
 ```json
 {
-  "id": "hcd-<unique-request-id>",
+  "id": "hnd-<unique-request-id>",
   "method": "pane.focus",
   "params": { "pane_id": "<target-pane-id>" }
 }
@@ -488,7 +488,7 @@ or workspace focus.
 | --- | ---: |
 | Snapshot, caller lookup, pane inspection, focus | 2 seconds each |
 | Tab or workspace creation | 5 seconds each |
-| Entire `hcd` invocation | 10 seconds total |
+| Entire `hnd` invocation | 10 seconds total |
 
 The total deadline starts at command entry and is a hard maximum covering path
 resolution, Herdr context and binary validation, Herdr I/O, and the one
@@ -511,7 +511,7 @@ protocol error.
 
 ## 16. Concurrency and partial failure
 
-Herdr does not expose an atomic find-or-create-by-cwd operation. `hcd` therefore
+Herdr does not expose an atomic find-or-create-by-cwd operation. `hnd` therefore
 uses one bounded recomputation:
 
 - if exact-pane focus or inspection reports `not_found` or a resource-specific
@@ -521,7 +521,7 @@ uses one bounded recomputation:
   common duplicate-creation race;
 - never retry more than once and never exceed the total deadline.
 
-Two concurrent `hcd` calls can still create duplicate resources. This is an
+Two concurrent `hnd` calls can still create duplicate resources. This is an
 accepted limitation of the initial version.
 
 If Herdr may have completed a create but its response is lost or invalid, the
@@ -572,7 +572,7 @@ Herdr is the only mode that unconditionally uses ordinary directory change.
   fields fail closed.
 - The plugin never deletes, closes, moves, or overwrites an existing Herdr
   resource.
-- The plugin never writes files or persistent state during `hcd` execution.
+- The plugin never writes files or persistent state during `hnd` execution.
 
 ## 19. Verification strategy
 
@@ -625,7 +625,7 @@ A temporary fake Unix socket server verifies:
 
 Focused tests verify:
 
-- the `hcd <path: filepath>` signature;
+- the `hnd <path: filepath>` signature;
 - caller cwd and environment access through `EngineInterface` boundaries;
 - canonical `$env.PWD` mutation only for `ChangeDirectory`;
 - `nothing` on success;
@@ -659,8 +659,8 @@ The supported installation paths are source-based:
 
 ```text
 cargo install --path .
-cargo install --git <repository-url> --tag <version> nu_plugin_herdr_cd
-plugin add ~/.cargo/bin/nu_plugin_herdr_cd
+cargo install --git <repository-url> --tag <version> nu_plugin_herdr_navigate_directory
+plugin add ~/.cargo/bin/nu_plugin_herdr_navigate_directory
 ```
 
 `plugin add` searches the current directory and `NU_PLUGIN_DIRS`. It does not
@@ -695,7 +695,7 @@ Implementation was divided into six independently reviewable phases:
 2. path model and pure decision engine;
 3. Herdr context and read-only inspection;
 4. Herdr focus and creation actions;
-5. complete `hcd` orchestration and resilience;
+5. complete `hnd` orchestration and resilience;
 6. quality gates, CI, and source distribution readiness.
 
 Each phase had explicit prerequisites, work items, verification, a user
