@@ -49,9 +49,9 @@ fn next_request_id() -> String {
 mod tests {
     use super::{FocusResult, focus_pane, next_request_id};
     use crate::domain::{ErrorKind, PaneId};
-    use crate::herdr::cli::RunError;
+    use crate::herdr::cli::{MAX_RESPONSE_BYTES, RunError};
     use crate::herdr::context::inside_context;
-    use crate::herdr::test_support::{TempDir, write_executable};
+    use crate::herdr::test_support::{TempDir, lock_cli, write_executable};
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::io::{Read, Write};
@@ -92,7 +92,9 @@ mod tests {
             }
             let request = String::from_utf8(buf).unwrap();
             let response = respond(&request);
-            stream.write_all(&response).unwrap();
+            // The client may close after a protocol error, including the 4 MiB
+            // cap, before this write finishes.
+            let _ = stream.write_all(&response);
             let _ = stream.flush();
         })
     }
@@ -186,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_truncated_and_oversized_responses_are_protocol_errors() {
+    fn malformed_and_truncated_responses_are_protocol_errors() {
         let dir = TempDir::new("focus-proto");
         let path = dir.path().join("malformed.sock");
         let listener = UnixListener::bind(&path).unwrap();
@@ -210,14 +212,16 @@ mod tests {
             RunError::Interrupted => panic!("unexpected interrupt"),
         }
         server.join().unwrap();
+    }
 
+    #[test]
+    fn oversized_response_is_a_protocol_error() {
+        let _cli = lock_cli();
+        let dir = TempDir::new("focus-huge");
         let path = dir.path().join("huge.sock");
         let listener = UnixListener::bind(&path).unwrap();
-        let server = serve(listener, |_| {
-            let mut body = vec![b'a'; 4 * 1024 * 1024 + 2];
-            body.push(b'\n');
-            body
-        });
+        let body = vec![b'a'; MAX_RESPONSE_BYTES + 1];
+        let server = serve(listener, move |_| body);
         let (_bin, context) = context_for(path.to_str().unwrap());
         match focus_pane(&context, &PaneId::new("w1:p2"), || false).unwrap_err() {
             RunError::Failed(error) => {
@@ -226,7 +230,7 @@ mod tests {
             }
             RunError::Interrupted => panic!("unexpected interrupt"),
         }
-        server.join().unwrap();
+        let _ = server.join();
     }
 
     #[test]
