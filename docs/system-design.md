@@ -163,11 +163,13 @@ otherwise. A non-empty argument is a hard physical prefix boundary
 reconstructed in the user's lexical style. Herdr candidates may complete
 multiple remaining path components; filesystem candidates remain direct
 children. A symlink to a valid directory is an eligible filesystem candidate:
-identity and deduplication use the canonical physical path, while a distinct
-lexical alias remains selectable. With an empty argument and multiple aliases
-for one physical directory, completion chooses the shortest terminal-safe
-display path, then lexical order. Hidden path components are not revealed
-unless the user has begun typing the corresponding dot-prefixed component.
+identity and deduplication use the canonical physical path, while the
+directory entry name remains selectable as a lexical alias, including when
+that name matches the canonical basename. With an empty argument and multiple
+aliases for one physical directory, completion chooses the shortest
+terminal-safe display path, then lexical order. Hidden path components are
+not revealed unless the user has begun typing the corresponding
+dot-prefixed component.
 
 Descriptions use at most three compact segments (`source · scope · optional
 count`) and keep status and scope provenance-coupled. The plugin does not

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use nu_plugin::DynamicCompletionCall;
 use nu_protocol::{DynamicSuggestion, Span, Value, ast::Expr, engine::ArgType};
 
-use super::display::to_suggestion;
+use super::display::{FilesystemAlias, to_suggestion};
 use super::prefix::{TypedPrefix, parse_typed_prefix, resolve_bound};
 use super::{CallerEngine, platform_is_supported, read_herdr_mode, read_home};
 use crate::domain::{
@@ -115,7 +115,6 @@ fn complete_directory(
     )
 }
 
-#[derive(Clone)]
 struct PreparedCompletion {
     caller_cwd: CanonicalPath,
     home: Option<CanonicalPath>,
@@ -175,21 +174,12 @@ fn complete_from_ready(
     let typed_owned = typed.to_string();
     let live = live.clone();
     let session = session.clone();
-    let prepared = match run_bounded(&halt_herdr, move || {
-        prepare_semantic(&engine_worker, &typed_owned, &live, &session)
+    let (prepared, semantic_suggestions) = match run_bounded(&halt_herdr, move || {
+        let prepared = prepare_semantic(&engine_worker, &typed_owned, &live, &session)?;
+        let suggestions = suggestions_from(&prepared, &[], span)?;
+        Some((prepared, suggestions))
     }) {
-        Ok(Some(prepared)) => prepared,
-        _ => return None,
-    };
-    if engine.interrupted() {
-        return None;
-    }
-
-    let prepared_semantic = prepared.clone();
-    let semantic_suggestions = match run_bounded(&halt_herdr, move || {
-        suggestions_from(&prepared_semantic, Vec::new(), span, &HashMap::new())
-    }) {
-        Ok(Some(suggestions)) => suggestions,
+        Ok(Some(ready)) => ready,
         _ => return None,
     };
     if engine.interrupted() {
@@ -209,13 +199,8 @@ fn complete_from_ready(
         return Some(semantic_suggestions);
     }
 
-    let mut aliases: HashMap<CanonicalPath, Vec<String>> = HashMap::new();
-    for (path, name) in &filesystem {
-        aliases.entry(path.clone()).or_default().push(name.clone());
-    }
-    let fs_paths: Vec<_> = filesystem.into_iter().map(|(path, _)| path).collect();
     match run_bounded(&halt_overall, move || {
-        suggestions_from(&prepared, fs_paths, span, &aliases)
+        suggestions_from(&prepared, &filesystem, span)
     }) {
         Ok(Some(suggestions)) => {
             if engine.interrupted() {
@@ -232,11 +217,15 @@ fn complete_from_ready(
 
 fn suggestions_from(
     prepared: &PreparedCompletion,
-    filesystem: Vec<CanonicalPath>,
+    filesystem: &[(CanonicalPath, FilesystemAlias)],
     span: Option<Span>,
-    aliases: &HashMap<CanonicalPath, Vec<String>>,
 ) -> Option<Vec<DynamicSuggestion>> {
-    let candidates = merge_candidates(prepared.semantic.clone(), filesystem, &prepared.caller_cwd)?;
+    let mut aliases: HashMap<CanonicalPath, Vec<FilesystemAlias>> = HashMap::new();
+    for (path, alias) in filesystem {
+        aliases.entry(path.clone()).or_default().push(alias.clone());
+    }
+    let fs_paths = filesystem.iter().map(|(path, _)| path.clone());
+    let candidates = merge_candidates(prepared.semantic.clone(), fs_paths, &prepared.caller_cwd)?;
     Some(
         candidates
             .into_iter()
@@ -260,22 +249,27 @@ fn filesystem_candidates(
     bound: Option<&PrefixBound>,
     caller_cwd: &CanonicalPath,
     halt: impl Fn() -> bool,
-) -> Vec<(CanonicalPath, String)> {
+) -> Vec<(CanonicalPath, FilesystemAlias)> {
     if halt() {
         return Vec::new();
     }
-    let fs_bound = bound.cloned().unwrap_or(PrefixBound {
-        base: caller_cwd.clone(),
-        remaining: prefix.remaining.clone(),
-    });
+    let remaining = prefix.remaining.clone();
+    let bound = bound.cloned();
     let caller = caller_cwd.clone();
-    run_bounded(&halt, move || read_direct_children(fs_bound, caller)).unwrap_or_default()
+    run_bounded(&halt, move || {
+        let fs_bound = bound.unwrap_or(PrefixBound {
+            base: caller.clone(),
+            remaining,
+        });
+        read_direct_children(fs_bound, caller)
+    })
+    .unwrap_or_default()
 }
 
 fn read_direct_children(
     bound: PrefixBound,
     caller_cwd: CanonicalPath,
-) -> Vec<(CanonicalPath, String)> {
+) -> Vec<(CanonicalPath, FilesystemAlias)> {
     let Ok(entries) = fs::read_dir(bound.base.as_path()) else {
         return Vec::new();
     };
@@ -288,11 +282,20 @@ fn read_direct_children(
         if name == "." || name == ".." {
             continue;
         }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         let Some(path) = CanonicalPath::try_directory(entry.path()) else {
             continue;
         };
         if filesystem_path_allowed(&path, name, &caller_cwd, &bound) {
-            paths.push((path, name.to_string()));
+            paths.push((
+                path,
+                FilesystemAlias {
+                    name: name.to_string(),
+                    symlink: file_type.is_symlink(),
+                },
+            ));
         }
     }
     paths
@@ -700,18 +703,14 @@ esac
         let caller = CanonicalPath::directory(root.path()).unwrap();
         let children = read_direct_children(bound, caller);
         let canonical_real = CanonicalPath::directory(&real).unwrap();
-        assert!(
-            children
-                .iter()
-                .any(|(path, name)| { path == &canonical_real && name == "real" })
-        );
-        assert!(
-            children
-                .iter()
-                .any(|(path, name)| { path == &canonical_real && name == "link" })
-        );
-        assert!(!children.iter().any(|(_, name)| name == "broken"));
-        assert!(!children.iter().any(|(_, name)| name == "file"));
+        assert!(children.iter().any(|(path, alias)| {
+            path == &canonical_real && alias.name == "real" && !alias.symlink
+        }));
+        assert!(children.iter().any(|(path, alias)| {
+            path == &canonical_real && alias.name == "link" && alias.symlink
+        }));
+        assert!(!children.iter().any(|(_, alias)| alias.name == "broken"));
+        assert!(!children.iter().any(|(_, alias)| alias.name == "file"));
     }
 
     #[test]
@@ -727,7 +726,8 @@ esac
         let caller = CanonicalPath::directory(root.path()).unwrap();
         let children = read_direct_children(bound, caller);
         assert_eq!(children.len(), 1);
-        assert_eq!(children[0].1, "link");
+        assert_eq!(children[0].1.name, "link");
+        assert!(children[0].1.symlink);
         assert_eq!(
             children[0].0,
             CanonicalPath::directory(outside.path()).unwrap()
@@ -1008,5 +1008,47 @@ esac
         assert!(values.contains(&"lib/"), "got {values:?}");
         assert!(values.contains(&"link/"), "got {values:?}");
         assert!(!values.contains(&"real/"), "got {values:?}");
+    }
+
+    #[test]
+    fn same_basename_symlink_alias_is_kept_on_empty_argument() {
+        let _cli = lock_cli();
+        let root = TempDir::new("same-base");
+        let outside = TempDir::new("project");
+        fs::create_dir(root.path().join("src")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("project")).unwrap();
+        let (snapshot, current) = snapshot_and_current(root.path().to_str().unwrap(), "");
+        let (_dir, bin) = install_fake(&snapshot, &current);
+        let engine = enabled_inside(root.path().to_str().unwrap(), &bin);
+        let context = crate::herdr::inside_context(
+            &bin,
+            "/tmp/nu-plugin-herdr-navigate-directory.sock",
+            "w1",
+            "w1:t1",
+            "w1:p1",
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let SessionInspection::Ready { live, session } =
+            inspect_session_concurrent(&context, Duration::from_secs(2), || false).unwrap()
+        else {
+            panic!("expected ready inspection");
+        };
+        let suggestions =
+            complete_from_ready(&engine, "", None, &live, &session, || false, || false).unwrap();
+        assert!(
+            suggestions.iter().any(|item| item.value == "project/"),
+            "same-basename symlink alias must stay selectable, got {:?}",
+            suggestions
+                .iter()
+                .map(|item| item.value.clone())
+                .collect::<Vec<_>>()
+        );
+        let outside_path = CanonicalPath::directory(outside.path()).unwrap();
+        assert!(
+            suggestions
+                .iter()
+                .all(|item| { item.value.trim_end_matches('/') != outside_path.as_str() })
+        );
     }
 }

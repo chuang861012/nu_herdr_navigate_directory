@@ -35,7 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dynamic completion keeps symlink directory names as selectable lexical
   aliases instead of rewriting them to their canonical targets. An empty
   argument still inserts ordinary filesystem children as `~/...` or absolute
-  paths; shortest-alias selection applies only to distinct symlink names.
+  paths; shortest-alias selection applies to symlink directory entries, even
+  when the alias matches the canonical basename.
 - Dynamic completion applies the 200 ms Herdr deadline through config,
   caller environment and binary validation, path lookup, and semantic
   aggregation, and the 250 ms overall deadline through filesystem

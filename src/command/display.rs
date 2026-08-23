@@ -9,13 +9,20 @@ use crate::domain::{
     CanonicalPath, CompletionCandidate, DescriptionData, PrefixBound, ScopeLabel, SourceLabel,
 };
 
+/// Lexical filesystem name plus whether the directory entry itself is a symlink.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FilesystemAlias {
+    pub name: String,
+    pub symlink: bool,
+}
+
 pub(crate) fn to_suggestion(
     candidate: CompletionCandidate,
     prefix: &TypedPrefix,
     bound: Option<&PrefixBound>,
     home: Option<&CanonicalPath>,
     span: Option<Span>,
-    aliases: &[String],
+    aliases: &[FilesystemAlias],
 ) -> DynamicSuggestion {
     let lexical = select_insertion(&candidate.path, prefix, bound, home, aliases);
     let display = escape_display(lexical.trim_end_matches('/'));
@@ -41,17 +48,17 @@ fn select_insertion(
     prefix: &TypedPrefix,
     bound: Option<&PrefixBound>,
     home: Option<&CanonicalPath>,
-    aliases: &[String],
+    aliases: &[FilesystemAlias],
 ) -> String {
     let physical = reconstruct(prefix, candidate, bound, home);
     if prefix.empty {
-        return select_empty_insertion(physical, candidate, prefix, aliases);
+        return select_empty_insertion(physical, prefix, aliases);
     }
     let remaining = bound.map(|bound| bound.remaining.as_str()).unwrap_or("");
     let mut best = None;
     for alias in aliases {
-        if alias.starts_with(remaining) {
-            let value = lexical_child(prefix, alias);
+        if alias.name.starts_with(remaining) {
+            let value = lexical_child(prefix, &alias.name);
             best = Some(match best {
                 Some(current) => pick_shorter(current, value),
                 None => value,
@@ -63,20 +70,14 @@ fn select_insertion(
 
 fn select_empty_insertion(
     physical: String,
-    candidate: &CanonicalPath,
     prefix: &TypedPrefix,
-    aliases: &[String],
+    aliases: &[FilesystemAlias],
 ) -> String {
-    let basename = candidate
-        .as_path()
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
     aliases
         .iter()
-        .filter(|alias| alias.as_str() != basename)
+        .filter(|alias| alias.symlink)
         .fold(physical, |best, alias| {
-            pick_shorter(best, lexical_child(prefix, alias))
+            pick_shorter(best, lexical_child(prefix, &alias.name))
         })
 }
 
@@ -210,7 +211,9 @@ fn is_unsafe_display_char(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_display, needs_quoting, quote_nu, render_description, to_suggestion};
+    use super::{
+        FilesystemAlias, escape_display, needs_quoting, quote_nu, render_description, to_suggestion,
+    };
     use crate::command::prefix::parse_typed_prefix;
     use crate::domain::{
         CanonicalPath, CompletionCandidate, DescriptionData, PrefixBound, ScopeLabel, SourceLabel,
@@ -219,6 +222,20 @@ mod tests {
 
     fn cp(path: &str) -> CanonicalPath {
         CanonicalPath::from_parts_for_test(path)
+    }
+
+    fn ordinary(name: &str) -> FilesystemAlias {
+        FilesystemAlias {
+            name: name.into(),
+            symlink: false,
+        }
+    }
+
+    fn symlink_alias(name: &str) -> FilesystemAlias {
+        FilesystemAlias {
+            name: name.into(),
+            symlink: true,
+        }
     }
 
     #[test]
@@ -409,7 +426,7 @@ mod tests {
             }),
             None,
             None,
-            &["link".into()],
+            &[symlink_alias("link")],
         );
         assert_eq!(suggestion.value, "link/");
         assert_eq!(suggestion.display_override.as_deref(), Some("link"));
@@ -430,10 +447,31 @@ mod tests {
             None,
             Some(&cp("/Users/me")),
             None,
-            &["link".into()],
+            &[symlink_alias("link")],
         );
         assert_eq!(suggestion.value, "link/");
         assert_eq!(suggestion.display_override.as_deref(), Some("link"));
+    }
+
+    #[test]
+    fn empty_argument_keeps_same_basename_symlink_alias() {
+        let suggestion = to_suggestion(
+            CompletionCandidate {
+                path: cp("/mnt/project"),
+                description: DescriptionData {
+                    source: SourceLabel::Directory,
+                    scope: ScopeLabel::None,
+                    pane_count: 0,
+                },
+            },
+            &parse_typed_prefix(""),
+            None,
+            Some(&cp("/Users/me")),
+            None,
+            &[symlink_alias("project")],
+        );
+        assert_eq!(suggestion.value, "project/");
+        assert_eq!(suggestion.display_override.as_deref(), Some("project"));
     }
 
     #[test]
@@ -451,7 +489,7 @@ mod tests {
             None,
             Some(&cp("/Users/me")),
             None,
-            &["src".into()],
+            &[ordinary("src")],
         );
         assert_eq!(suggestion.value, "~/repo/src/");
         assert_eq!(suggestion.display_override.as_deref(), Some("~/repo/src"));
