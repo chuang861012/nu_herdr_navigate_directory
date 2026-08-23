@@ -1,13 +1,22 @@
 //! Nushell plugin identity, `hnd` signature, and command-boundary orchestration.
 
+mod complete;
+mod display;
 mod orchestrate;
+mod prefix;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::time::Instant;
 
-use nu_plugin::{EngineInterface, EvaluatedCall, Plugin, PluginCommand, SimplePluginCommand};
-use nu_protocol::{Category, LabeledError, ShellError, Signature, Span, SyntaxShape, Type, Value};
+use nu_plugin::{
+    DynamicCompletionCall, EngineInterface, EvaluatedCall, Plugin, PluginCommand,
+    SimplePluginCommand,
+};
+use nu_protocol::{
+    Category, DynamicSuggestion, LabeledError, ShellError, Signature, Span, SyntaxShape, Type,
+    Value, engine::ArgType,
+};
 
 use crate::domain::{Error, ErrorKind, resolve_paths};
 use crate::herdr::{
@@ -23,6 +32,7 @@ trait CallerEngine: Clone + Send + 'static {
     fn env_var(&self, name: &str) -> Result<Option<Value>, Error>;
     fn env_vars(&self) -> Result<HashMap<String, Value>, Error>;
     fn add_env_var(&self, name: &str, value: Value) -> Result<(), Error>;
+    fn plugin_config(&self) -> Result<Option<Value>, Error>;
 }
 
 impl CallerEngine for EngineInterface {
@@ -48,6 +58,11 @@ impl CallerEngine for EngineInterface {
     fn add_env_var(&self, name: &str, value: Value) -> Result<(), Error> {
         EngineInterface::add_env_var(self, name, value)
             .map_err(|_| Error::invalid_path("failed to update the caller working directory"))
+    }
+
+    fn plugin_config(&self) -> Result<Option<Value>, Error> {
+        self.get_plugin_config()
+            .map_err(|_| Error::invalid_herdr_context("plugin configuration is unavailable"))
     }
 }
 
@@ -80,15 +95,27 @@ impl SimplePluginCommand for Hnd {
     }
 
     fn extra_description(&self) -> &str {
-        "Outside Herdr, hnd updates $env.PWD. Inside Herdr, it reuses an idle pane, changes directory only for downward navigation, or creates a focused tab or workspace. Successful calls return nothing."
+        "Outside Herdr, hnd updates $env.PWD. Inside Herdr, it reuses an idle pane, changes directory only for downward navigation, or creates a focused tab or workspace. Successful calls return nothing. Experimental opt-in dynamic completion can enrich the directory argument with live Herdr workspace and pane paths; it never changes execution behavior."
     }
 
     fn signature(&self) -> Signature {
         Signature::build(COMMAND_NAME)
-            .required("path", SyntaxShape::Filepath, "Directory to navigate to")
+            .required("path", SyntaxShape::Directory, "Directory to navigate to")
             .input_output_type(Type::Nothing, Type::Nothing)
             .allow_variants_without_examples(true)
             .category(Category::FileSystem)
+    }
+
+    #[expect(deprecated, reason = "forwarding experimental status")]
+    fn get_dynamic_completion(
+        &self,
+        _plugin: &HerdrNavigateDirectoryPlugin,
+        engine: &EngineInterface,
+        call: DynamicCompletionCall,
+        arg_type: ArgType,
+        _experimental: nu_protocol::engine::ExperimentalMarker,
+    ) -> Option<Vec<DynamicSuggestion>> {
+        complete::complete_path_argument(engine, call, arg_type)
     }
 
     fn run(
@@ -297,7 +324,7 @@ mod tests {
         assert_eq!(signature.required_positional[0].name, "path");
         assert_eq!(
             signature.required_positional[0].shape,
-            SyntaxShape::Filepath
+            SyntaxShape::Directory
         );
         assert!(signature.optional_positional.is_empty());
         assert!(signature.rest_positional.is_none());
@@ -331,6 +358,7 @@ mod tests {
         pwd_delay: Duration,
         env_writes: Arc<Mutex<Vec<(String, String)>>>,
         cwd_calls: Arc<AtomicUsize>,
+        plugin_config: Result<Option<Value>, Error>,
     }
 
     impl FakeEngine {
@@ -344,6 +372,7 @@ mod tests {
                 pwd_delay: Duration::ZERO,
                 env_writes: Arc::new(Mutex::new(Vec::new())),
                 cwd_calls: Arc::new(AtomicUsize::new(0)),
+                plugin_config: Ok(None),
             }
         }
 
@@ -394,6 +423,13 @@ mod tests {
                 .expect("env writes")
                 .push((name.to_string(), rendered));
             Ok(())
+        }
+
+        fn plugin_config(&self) -> Result<Option<Value>, Error> {
+            match &self.plugin_config {
+                Ok(value) => Ok(value.clone()),
+                Err(error) => Err(error.clone()),
+            }
         }
     }
 
@@ -585,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn filepath_argument_is_required_and_decoded_as_a_string() {
+    fn directory_argument_is_required_and_decoded_as_a_string() {
         let call = EvaluatedCall::new(Span::test_data())
             .with_positional(Value::test_string("/tmp/project"));
         let path: String = call.req(0).unwrap();

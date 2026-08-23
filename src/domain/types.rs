@@ -24,6 +24,8 @@ pub(crate) struct Workspace {
     pub root: Option<CanonicalPath>,
     pub focused_tab_id: Option<TabId>,
     pub tabs: Vec<Tab>,
+    pub label: String,
+    pub number: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
