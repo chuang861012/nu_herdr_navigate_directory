@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Experimental, disabled-by-default dynamic completion for `hnd`. Enable it
+  with `$env.config.plugins.herdr_navigate_directory.dynamic_completion = true`.
+  Inside Herdr it can enrich directory candidates from live workspace and pane
+  paths; outside Herdr, on any inspection failure, or when no semantic match
+  exists it falls back to native directory completion. Completion never
+  changes how `hnd` executes. Nushell 0.115 may cache results, so put the
+  opt-in in `config.nu` and start a new session.
+
 ### Changed
 
+- The `hnd` path argument is now a directory rather than a generic filepath,
+  so native completion and the public signature match the directory-only
+  contract. Accepted path forms are unchanged.
 - **Breaking:** renamed the repository to `nu_herdr_navigate_directory`, the
   Cargo package and binary to `nu_plugin_herdr_navigate_directory`, the
   Nushell plugin identity to `herdr_navigate_directory`, and the public
@@ -18,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Install docs now register the plugin with the installed binary path. `plugin
-  add` searches the current directory and `NU_PLUGIN_DIRS`, not `PATH`.
+add` searches the current directory and `NU_PLUGIN_DIRS`, not `PATH`.
 
 ## [0.1.1] - 2026-08-23
 

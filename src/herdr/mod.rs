@@ -19,8 +19,8 @@ pub(crate) use context::{EnvValue, HerdrMode, InsideContext, classify_herdr_env,
 pub(crate) use create::{create_tab, create_workspace};
 pub(crate) use focus::{FocusResult, focus_pane};
 pub(crate) use inspect::{
-    ProcessInspection, SessionInspection, apply_shell_evidence, exact_path_shell_candidates,
-    inspect_process, inspect_session,
+    LiveCaller, ProcessInspection, SessionInspection, apply_shell_evidence,
+    exact_path_shell_candidates, inspect_process, inspect_session, inspect_session_concurrent,
 };
 pub(crate) use protocol::CommandResult;
 

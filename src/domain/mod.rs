@@ -3,12 +3,17 @@
 //! This layer must stay free of Nushell and Herdr side effects.
 //! Command and Herdr layers consume the crate-internal API in later phases.
 
+mod completion;
 mod decision;
 mod path;
 mod types;
 
+pub(crate) use completion::{
+    CompletionCandidate, DescriptionData, Evidence, PrefixBound, ScopeLabel, SourceLabel,
+    filesystem_path_allowed, merge_candidates, semantic_path_allowed, session_evidence,
+};
 pub(crate) use decision::{decide, nearest_containing_workspace};
-pub(crate) use path::{CanonicalPath, ResolvedPaths, resolve_paths};
+pub(crate) use path::{CanonicalPath, ResolvedPaths, expand_leading_home, resolve_paths};
 pub(crate) use types::{
     Action, AgentStatus, Caller, ForegroundProcess, Occupant, Pane, PaneId, Session,
     ShellProcessEvidence, Tab, TabId, Workspace, WorkspaceId,

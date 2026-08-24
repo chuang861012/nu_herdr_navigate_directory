@@ -80,6 +80,27 @@ impl CanonicalPath {
             .count()
     }
 
+    /// Path components after `ancestor`, or `None` when this path is not contained.
+    pub(crate) fn relative_components(&self, ancestor: &Self) -> Option<Vec<String>> {
+        if !ancestor.contains(self) {
+            return None;
+        }
+        let prefix_len = ancestor.as_path().components().count();
+        Some(
+            self.as_path()
+                .components()
+                .skip(prefix_len)
+                .map(|component| {
+                    component
+                        .as_os_str()
+                        .to_str()
+                        .expect("canonical paths are UTF-8")
+                        .to_string()
+                })
+                .collect(),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn from_parts_for_test(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
@@ -133,7 +154,7 @@ pub(crate) fn resolve_paths(
     Ok(ResolvedPaths { caller_cwd, target })
 }
 
-fn expand_leading_home(target: &str, home: Option<&str>) -> Result<PathBuf, Error> {
+pub(crate) fn expand_leading_home(target: &str, home: Option<&str>) -> Result<PathBuf, Error> {
     if target != "~" && !target.starts_with("~/") {
         return Ok(PathBuf::from(target));
     }
@@ -281,6 +302,16 @@ mod tests {
         assert_eq!(root.depth(), 0);
         assert_eq!(repo.depth(), 1);
         assert_eq!(src.depth(), 2);
+        assert_eq!(
+            repo.relative_components(&root),
+            Some(vec!["repo".to_string()])
+        );
+        assert_eq!(
+            src.relative_components(&repo),
+            Some(vec!["src".to_string()])
+        );
+        assert_eq!(src.relative_components(&src), Some(Vec::new()));
+        assert!(repo.relative_components(&src).is_none());
     }
 
     #[test]

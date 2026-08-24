@@ -3,7 +3,7 @@
 Herdr-aware directory navigation for Nushell.
 
 ```nu
-hnd <path: filepath> -> nothing
+hnd <path: directory> -> nothing
 ```
 
 Point `hnd` at a directory and it picks the least disruptive move: stay in this
@@ -138,11 +138,40 @@ workspace's focused tab, then snapshot list order.
 ## Configuration
 
 > [!WARNING]
-> `hnd` is opinionated. This version does not provide behavior customization.
-> Customization may be added in a future version.
+> `hnd` is opinionated. This version does not provide behavior customization
+> for navigation. Customization may be added in a future version.
 
 There are no flags, environment variables, or config files that change how
-`hnd` chooses an action. The decision tree above is the complete behavior.
+`hnd` chooses an action. The decision tree above is the complete execution
+behavior.
+
+### Experimental dynamic completion
+
+Directory completion is experimental and off by default. Enable it in
+`config.nu`:
+
+```nu
+$env.config.plugins.herdr_navigate_directory = {
+  dynamic_completion: true
+}
+```
+
+Only the boolean `true` turns it on. A missing config, a missing key, `false`,
+another type, or a config-read failure leaves native Nushell directory
+completion in place. The setting never changes what `hnd` does when you press
+Enter.
+
+When enabled inside Herdr, Tab may show workspace roots and pane foreground
+directories from the current session alongside direct child directories.
+Descriptions are informational; `hnd` re-reads live state before it focuses a
+pane or creates a resource. Outside Herdr, and whenever Herdr cannot be
+inspected confidently, completion falls back to native directory completion.
+
+Nushell 0.115 may cache plugin completion results for the same command line.
+Put the opt-in in `config.nu` and start a new session. Changing the setting
+interactively is not guaranteed to refresh an already cached answer. The
+plugin does not implement its own cache and does not require disabling
+Nushell's global completion cache.
 
 ## Development
 

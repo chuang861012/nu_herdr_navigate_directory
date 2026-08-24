@@ -167,6 +167,8 @@ mod tests {
             root: root.map(cp),
             focused_tab_id: focused_tab.map(TabId::new),
             tabs,
+            label: id.to_string(),
+            number: 1,
         }
     }
 

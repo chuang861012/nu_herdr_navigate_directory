@@ -1,6 +1,12 @@
 //! Read-only Herdr inspection mapped onto phase-2 domain types.
 
-use super::cli::{self, READ_TIMEOUT, RunError};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use super::cli::{self, POLL_INTERVAL, READ_TIMEOUT, RunError};
 use super::context::InsideContext;
 use super::protocol::{
     self, CommandResult, RawAgentStatus, RawPane, RawProcessInfo, RawSnapshot, RawTab, RawWorkspace,
@@ -37,17 +43,123 @@ pub(crate) fn inspect_session(
     context: &InsideContext,
     interrupted: impl Fn() -> bool,
 ) -> Result<SessionInspection, RunError> {
-    let snapshot = match snapshot(context, &interrupted)? {
+    inspect_session_sequential(context, READ_TIMEOUT, interrupted)
+}
+
+/// Concurrent snapshot and live-caller reads that share one wall-clock deadline.
+///
+/// A stale caller/snapshot mismatch is returned immediately. Completion must not
+/// perform the execution path's bounded recomputation.
+pub(crate) fn inspect_session_concurrent(
+    context: &InsideContext,
+    timeout: Duration,
+    interrupted: impl Fn() -> bool,
+) -> Result<SessionInspection, RunError> {
+    inspect_session_parallel(context, timeout, interrupted)
+}
+
+fn inspect_session_sequential(
+    context: &InsideContext,
+    timeout: Duration,
+    interrupted: impl Fn() -> bool,
+) -> Result<SessionInspection, RunError> {
+    let snapshot = match snapshot(context, timeout, &interrupted)? {
         CommandResult::Ok(snapshot) => snapshot,
         CommandResult::NotFound { .. } => return Ok(SessionInspection::Stale),
     };
     protocol::require_supported_version(&snapshot)?;
     let session = super::cli::run_bounded(&interrupted, move || map_session(&snapshot))??;
 
-    let live_pane = match current_pane(context, &interrupted)? {
+    let live_pane = match current_pane(context, timeout, &interrupted)? {
         CommandResult::Ok(pane) => pane,
         CommandResult::NotFound { .. } => return Ok(SessionInspection::Stale),
     };
+    finish_inspection(session, live_pane)
+}
+
+fn inspect_session_parallel(
+    context: &InsideContext,
+    timeout: Duration,
+    interrupted: impl Fn() -> bool,
+) -> Result<SessionInspection, RunError> {
+    let halt = Arc::new(AtomicBool::new(false));
+    let (snapshot_tx, snapshot_rx) = mpsc::channel();
+    let (current_tx, current_rx) = mpsc::channel();
+    let snapshot_context = context.clone();
+    let current_context = context.clone();
+    let snapshot_halt = halt.clone();
+    let current_halt = halt.clone();
+
+    thread::spawn(move || {
+        let _ = snapshot_tx.send(snapshot(&snapshot_context, timeout, &|| {
+            snapshot_halt.load(Ordering::Relaxed)
+        }));
+    });
+    thread::spawn(move || {
+        let _ = current_tx.send(current_pane(&current_context, timeout, &|| {
+            current_halt.load(Ordering::Relaxed)
+        }));
+    });
+
+    let deadline = Instant::now() + timeout;
+    let snapshot_result = recv_cli_result(&snapshot_rx, &halt, &interrupted, deadline)?;
+    let current_result = recv_cli_result(&current_rx, &halt, &interrupted, deadline)?;
+
+    let snapshot = match snapshot_result? {
+        CommandResult::Ok(snapshot) => snapshot,
+        CommandResult::NotFound { .. } => return Ok(SessionInspection::Stale),
+    };
+    finalize_inspection_bounded(snapshot, current_result, &interrupted)
+}
+
+fn finalize_inspection_bounded(
+    snapshot: RawSnapshot,
+    current_result: Result<CommandResult<RawPane>, RunError>,
+    halt: &dyn Fn() -> bool,
+) -> Result<SessionInspection, RunError> {
+    cli::run_bounded(halt, move || {
+        protocol::require_supported_version(&snapshot)?;
+        let session = map_session(&snapshot)?;
+        let live_pane = match current_result? {
+            CommandResult::Ok(pane) => pane,
+            CommandResult::NotFound { .. } => return Ok(SessionInspection::Stale),
+        };
+        finish_inspection(session, live_pane)
+    })?
+}
+
+fn recv_cli_result<T>(
+    rx: &mpsc::Receiver<Result<T, RunError>>,
+    halt: &AtomicBool,
+    interrupted: impl Fn() -> bool,
+    deadline: Instant,
+) -> Result<Result<T, RunError>, RunError> {
+    loop {
+        if interrupted() {
+            halt.store(true, Ordering::Relaxed);
+            return Err(RunError::Interrupted);
+        }
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .min(POLL_INTERVAL);
+        if wait.is_zero() {
+            halt.store(true, Ordering::Relaxed);
+            return Err(Error::herdr_timeout("Herdr command timed out").into());
+        }
+        match rx.recv_timeout(wait) {
+            Ok(result) => return Ok(result),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                halt.store(true, Ordering::Relaxed);
+                return Err(
+                    Error::herdr_transport("Herdr inspection ended without a result").into(),
+                );
+            }
+        }
+    }
+}
+
+fn finish_inspection(session: Session, live_pane: RawPane) -> Result<SessionInspection, RunError> {
     let live = live_caller(&live_pane)?;
     if !session_contains(&session, &live) {
         return Ok(SessionInspection::Stale);
@@ -133,20 +245,22 @@ pub(crate) fn apply_shell_evidence(
 
 fn snapshot(
     context: &InsideContext,
+    timeout: Duration,
     interrupted: &impl Fn() -> bool,
 ) -> Result<CommandResult<RawSnapshot>, RunError> {
-    let output = cli::run(context, &["api", "snapshot"], READ_TIMEOUT, interrupted)?;
+    let output = cli::run(context, &["api", "snapshot"], timeout, interrupted)?;
     protocol::parse_snapshot(&output)
 }
 
 fn current_pane(
     context: &InsideContext,
+    timeout: Duration,
     interrupted: &impl Fn() -> bool,
 ) -> Result<CommandResult<RawPane>, RunError> {
     let output = cli::run(
         context,
         &["pane", "current", "--current"],
-        READ_TIMEOUT,
+        timeout,
         interrupted,
     )?;
     protocol::parse_pane_current(&output)
@@ -292,6 +406,8 @@ fn map_workspace(workspace: &RawWorkspace, snapshot: &RawSnapshot) -> Result<Wor
         root: workspace_root(workspace, &tabs, snapshot),
         focused_tab_id: Some(TabId::new(workspace.active_tab_id.clone())),
         tabs,
+        label: workspace.label.clone(),
+        number: workspace.number,
     })
 }
 
@@ -392,7 +508,8 @@ fn require_id(kind: &str, id: &str) -> Result<(), Error> {
 mod tests {
     use super::{
         LiveCaller, ProcessInspection, SessionInspection, apply_shell_evidence,
-        exact_path_shell_candidates, inspect_process, inspect_session, map_session,
+        exact_path_shell_candidates, finalize_inspection_bounded, inspect_process, inspect_session,
+        inspect_session_concurrent, map_session,
     };
     use crate::domain::CanonicalPath;
     use crate::domain::{AgentStatus, Caller, Occupant, PaneId, TabId, WorkspaceId};
@@ -491,6 +608,19 @@ mod tests {
         };
         let CommandResult::Ok(raw) = parse_snapshot(&output).unwrap() else {
             panic!("snapshot");
+        };
+        raw
+    }
+
+    fn raw_current(json: &str) -> super::RawPane {
+        let output = crate::herdr::cli::CliOutput {
+            stdout: json.as_bytes().to_vec(),
+            stderr: Vec::new(),
+            status: std::os::unix::process::ExitStatusExt::from_raw(0),
+        };
+        let CommandResult::Ok(raw) = crate::herdr::protocol::parse_pane_current(&output).unwrap()
+        else {
+            panic!("current pane");
         };
         raw
     }
@@ -935,6 +1065,108 @@ esac
             inspect_session(&stale_ctx, || false).unwrap(),
             SessionInspection::Stale
         ));
+        assert!(matches!(
+            inspect_session_concurrent(&stale_ctx, super::READ_TIMEOUT, || false).unwrap(),
+            SessionInspection::Stale
+        ));
+    }
+
+    #[test]
+    fn concurrent_inspection_finalization_honors_halt() {
+        let root = TempDir::new("finalize-halt");
+        let snapshot = raw_snapshot(&snapshot_json(root.path().to_str().unwrap(), "", ""));
+        let current = raw_current(&current_json(root.path().to_str().unwrap(), "w1:p1"));
+
+        assert!(matches!(
+            finalize_inspection_bounded(snapshot, Ok(CommandResult::Ok(current)), &|| true),
+            Err(crate::herdr::cli::RunError::Interrupted)
+        ));
+    }
+
+    #[test]
+    fn concurrent_inspection_overlaps_snapshot_and_live_caller() {
+        let _cli = lock_cli();
+        let root = TempDir::new("overlap");
+        let snapshot = snapshot_json(root.path().to_str().unwrap(), "", "");
+        let dir = TempDir::new("overlap-bin");
+        let snapshot_path = dir.path().join("snapshot.json");
+        let current_path = dir.path().join("current.json");
+        let record = dir.path().join("record");
+        fs::write(&snapshot_path, snapshot).unwrap();
+        fs::write(
+            &current_path,
+            current_json(root.path().to_str().unwrap(), "w1:p1"),
+        )
+        .unwrap();
+        let bin = write_executable(
+            dir.path(),
+            "herdr",
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf 'start %s %s\n' "$1" "$2" >> {record}
+sleep 0.12
+printf 'end %s %s\n' "$1" "$2" >> {record}
+case "$1 $2" in
+  "api snapshot") cat {snapshot} ;;
+  "pane current") cat {current} ;;
+  *) printf 'unexpected %s\n' "$*" >> {record}; echo "unexpected $*" >&2; exit 2 ;;
+esac
+"#,
+                record = sh_single(&record.display().to_string()),
+                snapshot = sh_single(&snapshot_path.display().to_string()),
+                current = sh_single(&current_path.display().to_string()),
+            ),
+        );
+        let context = inside_context(
+            bin.to_str().unwrap(),
+            "/tmp/nu-plugin-herdr-navigate-directory.sock",
+            "w1",
+            "w1:t1",
+            "w1:p1",
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let SessionInspection::Ready { .. } =
+            inspect_session_concurrent(&context, std::time::Duration::from_secs(2), || false)
+                .unwrap()
+        else {
+            panic!("expected ready concurrent inspection");
+        };
+        let recorded = fs::read_to_string(&record).unwrap();
+        let snapshot_start = recorded.find("start api snapshot").expect("snapshot start");
+        let current_start = recorded.find("start pane current").expect("current start");
+        let first_end = recorded
+            .find("end api snapshot")
+            .min(recorded.find("end pane current"))
+            .expect("first end");
+        assert!(
+            snapshot_start.min(current_start) < first_end
+                && snapshot_start.max(current_start) < first_end,
+            "snapshot and live-caller must overlap, record:\n{recorded}"
+        );
+        assert!(!recorded.contains("process-info"));
+        assert!(!recorded.contains("unexpected"));
+    }
+
+    #[test]
+    fn concurrent_inspection_never_calls_process_info_or_mutations() {
+        let _cli = lock_cli();
+        let root = TempDir::new("readonly");
+        let snapshot = snapshot_json(root.path().to_str().unwrap(), "", "");
+        let (dir, context) = install_fake(
+            &snapshot,
+            &current_json(root.path().to_str().unwrap(), "w1:p1"),
+            &process_json(true),
+        );
+        inspect_session_concurrent(&context, super::READ_TIMEOUT, || false).unwrap();
+        let recorded = fs::read_to_string(dir.path().join("record")).unwrap();
+        assert!(recorded.contains("args=api snapshot"));
+        assert!(recorded.contains("args=pane current --current"));
+        assert!(!recorded.contains("process-info"));
+        assert!(!recorded.contains("tab create"));
+        assert!(!recorded.contains("workspace create"));
+        assert!(!recorded.contains("pane focus"));
     }
 
     #[test]
