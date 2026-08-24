@@ -168,6 +168,8 @@ behavior.
 
 ### Experimental dynamic completion
 
+![Dynamic completion showing workspace and directory candidates](assets/dynamic_completion.webp)
+
 Directory completion is experimental and off by default. Enable it in
 `config.nu`:
 
@@ -187,8 +189,6 @@ directories from the current session alongside direct child directories.
 Descriptions are informational; `hnd` re-reads live state before it focuses a
 pane or creates a resource. Outside Herdr, and whenever Herdr cannot be
 inspected confidently, completion falls back to native directory completion.
-
-![Dynamic completion showing workspace and directory candidates](assets/dynamic_completion.webp)
 
 > [!WARNING]
 > Nushell 0.115 may cache plugin completion results for the same command line.
