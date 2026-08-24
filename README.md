@@ -57,20 +57,20 @@ registry.
 
 | Path form | Example | Supported | Notes |
 | --------- | ------- | --------- | ----- |
-| Relative path | `hnd src` | Yes | Resolved against the caller's current directory |
-| Parent or current directory | `hnd ..`, `hnd .` | Yes | `.` and `..` are resolved before navigation |
-| Absolute path | `hnd /repo/src` | Yes | Must point to an existing, enterable directory |
-| Home directory | `hnd ~` | Yes | Requires the caller's home directory to be available |
-| Home-relative path | `hnd ~/src` | Yes | Only a leading `~/` is expanded |
-| Path containing spaces | `hnd "my dir"` | Yes | Quote the path using normal Nushell syntax |
-| Symbolic-link path | `hnd linked-dir` | Yes | Resolved to its canonical physical directory |
-| No path | `hnd` | No | One path argument is required |
-| Previous directory | `hnd -` | No | `cd -` behavior is not implemented |
-| Named-user home | `hnd ~otheruser` | No | `~otheruser` expansion is not implemented |
-| Glob | `hnd */src` | No | Glob expansion is not implemented |
-| Multiple paths | `hnd src tests` | No | Exactly one path is accepted |
-| Flags | `hnd --some-flag src` | No | The command has no flags |
-| Pipeline input | `'/repo' | hnd` | No | Pipeline input is not accepted |
+| Relative path | `hnd src` | ✅ | Resolved against the caller's current directory |
+| Parent or current directory | `hnd ..`, `hnd .` | ✅ | `.` and `..` are resolved before navigation |
+| Absolute path | `hnd /repo/src` | ✅ | Must point to an existing, enterable directory |
+| Home directory | `hnd ~` | ✅ | Requires the caller's home directory to be available |
+| Home-relative path | `hnd ~/src` | ✅ | Only a leading `~/` is expanded |
+| Path containing spaces | `hnd "my dir"` | ✅ | Quote the path using normal Nushell syntax |
+| Symbolic-link path | `hnd linked-dir` | ✅ | Resolved to its canonical physical directory |
+| No path | `hnd` | ❌ | One path argument is required |
+| Previous directory | `hnd -` | ❌ | `cd -` behavior is not implemented |
+| Named-user home | `hnd ~otheruser` | ❌ | `~otheruser` expansion is not implemented |
+| Glob | `hnd */src` | ❌ | Glob expansion is not implemented |
+| Multiple paths | `hnd src tests` | ❌ | Exactly one path is accepted |
+| Flags | `hnd --some-flag src` | ❌ | The command has no flags |
+| Pipeline input | `'/repo' | hnd` | ❌ | Pipeline input is not accepted |
 
 ## How `hnd` decides
 
