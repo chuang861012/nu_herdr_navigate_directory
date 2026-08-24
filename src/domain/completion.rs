@@ -1,5 +1,7 @@
 //! Pure completion evidence, prefix matching, and provenance-safe descriptions.
 
+use std::collections::HashMap;
+
 use super::path::CanonicalPath;
 use super::types::{AgentStatus, Occupant, Session, TabId, WorkspaceId};
 
@@ -159,13 +161,17 @@ pub(crate) fn merge_candidates(
     caller_cwd: &CanonicalPath,
 ) -> Option<Vec<CompletionCandidate>> {
     let mut groups: Vec<(CanonicalPath, Vec<Evidence>)> = Vec::new();
+    let mut group_indices = HashMap::new();
     let mut semantic_count = 0usize;
     for (path, evidence) in semantic {
         if &path == caller_cwd {
             continue;
         }
-        if insert_evidence(&mut groups, path, evidence) {
+        if insert_evidence(&mut groups, &mut group_indices, path, evidence) {
             semantic_count += 1;
+            if groups.len() > CANDIDATE_CEILING {
+                return None;
+            }
         }
     }
     if semantic_count == 0 {
@@ -175,10 +181,11 @@ pub(crate) fn merge_candidates(
         if &path == caller_cwd {
             continue;
         }
-        insert_evidence(&mut groups, path, Evidence::Filesystem);
-    }
-    if groups.len() > CANDIDATE_CEILING {
-        return None;
+        if insert_evidence(&mut groups, &mut group_indices, path, Evidence::Filesystem)
+            && groups.len() > CANDIDATE_CEILING
+        {
+            return None;
+        }
     }
     Some(
         groups
@@ -244,13 +251,15 @@ fn matches_filesystem_name(name: &str, bound: &PrefixBound) -> bool {
 
 fn insert_evidence(
     groups: &mut Vec<(CanonicalPath, Vec<Evidence>)>,
+    group_indices: &mut HashMap<CanonicalPath, usize>,
     path: CanonicalPath,
     evidence: Evidence,
 ) -> bool {
-    if let Some((_, existing)) = groups.iter_mut().find(|(known, _)| known == &path) {
-        existing.push(evidence);
+    if let Some(index) = group_indices.get(&path).copied() {
+        groups[index].1.push(evidence);
         false
     } else {
+        group_indices.insert(path.clone(), groups.len());
         groups.push((path, vec![evidence]));
         true
     }
@@ -401,6 +410,8 @@ fn workspace_scope(evidence: &[Evidence]) -> ScopeLabel {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::{
         CANDIDATE_CEILING, CompletionCandidate, DescriptionData, Evidence, OccupantKind,
         PrefixBound, ScopeLabel, SourceLabel, filesystem_path_allowed, merge_candidates,
@@ -959,19 +970,43 @@ mod tests {
     }
 
     #[test]
-    fn ceiling_rejects_the_whole_set() {
-        let semantic = (0..=CANDIDATE_CEILING).map(|index| {
-            (
-                cp(&format!("/repo/{index}")),
-                Evidence::WorkspaceRoot {
-                    workspace_id: WorkspaceId::new(format!("w{index}")),
-                    label: format!("w{index}"),
-                    number: index + 1,
-                    is_current: false,
-                },
-            )
-        });
+    fn ceiling_stops_consuming_semantic_candidates() {
+        let consumed = Cell::new(0);
+        let semantic = (0..CANDIDATE_CEILING + 100)
+            .inspect(|_| consumed.set(consumed.get() + 1))
+            .map(|index| {
+                (
+                    cp(&format!("/repo/{index}")),
+                    Evidence::WorkspaceRoot {
+                        workspace_id: WorkspaceId::new(format!("w{index}")),
+                        label: format!("w{index}"),
+                        number: index + 1,
+                        is_current: false,
+                    },
+                )
+            });
         assert!(merge_candidates(semantic, [], &cp("/cwd")).is_none());
+        assert_eq!(consumed.get(), CANDIDATE_CEILING + 1);
+    }
+
+    #[test]
+    fn ceiling_stops_consuming_filesystem_candidates() {
+        let semantic = [(
+            cp("/semantic"),
+            Evidence::WorkspaceRoot {
+                workspace_id: WorkspaceId::new("w1"),
+                label: "repo".into(),
+                number: 1,
+                is_current: true,
+            },
+        )];
+        let consumed = Cell::new(0);
+        let filesystem = (0..CANDIDATE_CEILING + 100)
+            .inspect(|_| consumed.set(consumed.get() + 1))
+            .map(|index| cp(&format!("/filesystem/{index}")));
+
+        assert!(merge_candidates(semantic, filesystem, &cp("/cwd")).is_none());
+        assert_eq!(consumed.get(), CANDIDATE_CEILING);
     }
 
     #[test]
