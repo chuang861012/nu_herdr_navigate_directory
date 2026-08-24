@@ -135,14 +135,12 @@ unless the action is a downward directory change.
 ### Idle panes
 
 A pane is reused only when its foreground directory is the exact target and it
-is idle:
+meets one of these idle conditions:
 
-- a shell pane is idle only when process info proves the interactive shell
-  itself is in the foreground;
-- an agent pane is idle only when its status is `idle` or `done`.
-
-Incomplete process information, `working`, `blocked`, and `unknown` agent
-states are never treated as idle.
+| Pane type | Treated as idle | Not treated as idle |
+| --------- | --------------- | ------------------- |
+| Shell | No agent is detected and process info proves the interactive shell itself is in the foreground | Process info is incomplete or another foreground process is active |
+| Agent | Its status is exactly `idle` or `done` | Its status is `working`, `blocked`, or `unknown` |
 
 When several idle panes match, `hnd` prefers the caller's tab, then the
 workspace's focused tab, then snapshot list order.
