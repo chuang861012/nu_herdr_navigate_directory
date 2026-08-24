@@ -51,6 +51,27 @@ From a local checkout, use `cargo install --path .` instead. `plugin add` is
 not required again after a Nushell restart if the plugin remains in the
 registry.
 
+## Supported path forms
+
+`hnd` intentionally supports a smaller set of path forms than Nushell's `cd`:
+
+| Path form | Example | Supported | Notes |
+| --------- | ------- | --------- | ----- |
+| Relative path | `hnd src` | Yes | Resolved against the caller's current directory |
+| Parent or current directory | `hnd ..`, `hnd .` | Yes | `.` and `..` are resolved before navigation |
+| Absolute path | `hnd /repo/src` | Yes | Must point to an existing, enterable directory |
+| Home directory | `hnd ~` | Yes | Requires the caller's home directory to be available |
+| Home-relative path | `hnd ~/src` | Yes | Only a leading `~/` is expanded |
+| Path containing spaces | `hnd "my dir"` | Yes | Quote the path using normal Nushell syntax |
+| Symbolic-link path | `hnd linked-dir` | Yes | Resolved to its canonical physical directory |
+| No path | `hnd` | No | One path argument is required |
+| Previous directory | `hnd -` | No | `cd -` behavior is not implemented |
+| Named-user home | `hnd ~otheruser` | No | `~otheruser` expansion is not implemented |
+| Glob | `hnd */src` | No | Glob expansion is not implemented |
+| Multiple paths | `hnd src tests` | No | Exactly one path is accepted |
+| Flags | `hnd --some-flag src` | No | The command has no flags |
+| Pipeline input | `'/repo' | hnd` | No | Pipeline input is not accepted |
+
 ## How `hnd` decides
 
 > [!WARNING]
@@ -166,6 +187,8 @@ directories from the current session alongside direct child directories.
 Descriptions are informational; `hnd` re-reads live state before it focuses a
 pane or creates a resource. Outside Herdr, and whenever Herdr cannot be
 inspected confidently, completion falls back to native directory completion.
+
+![Dynamic completion showing workspace and directory candidates](assets/dynamic_completion.webp)
 
 Nushell 0.115 may cache plugin completion results for the same command line.
 Put the opt-in in `config.nu` and start a new session. Changing the setting
