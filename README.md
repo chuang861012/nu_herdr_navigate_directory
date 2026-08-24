@@ -51,6 +51,27 @@ From a local checkout, use `cargo install --path .` instead. `plugin add` is
 not required again after a Nushell restart if the plugin remains in the
 registry.
 
+## Supported path forms
+
+`hnd` intentionally supports a smaller set of path forms than Nushell's `cd`:
+
+| Path form | Example | Supported | Notes |
+| --------- | ------- | --------- | ----- |
+| Relative path | `hnd src` | ✅ | Resolved against the caller's current directory |
+| Parent or current directory | `hnd ..`, `hnd .` | ✅ | `.` and `..` are resolved before navigation |
+| Absolute path | `hnd /repo/src` | ✅ | Must point to an existing, enterable directory |
+| Home directory | `hnd ~` | ✅ | Requires the caller's home directory to be available |
+| Home-relative path | `hnd ~/src` | ✅ | Only a leading `~/` is expanded |
+| Path containing spaces | `hnd "my dir"` | ✅ | Quote the path using normal Nushell syntax |
+| Symbolic-link path | `hnd linked-dir` | ✅ | Resolved to its canonical physical directory |
+| No path | `hnd` | ❌ | One path argument is required |
+| Previous directory | `hnd -` | ❌ | `cd -` behavior is not implemented |
+| Named-user home | `hnd ~otheruser` | ❌ | `~otheruser` expansion is not implemented |
+| Glob | `hnd */src` | ❌ | Glob expansion is not implemented |
+| Multiple paths | `hnd src tests` | ❌ | Exactly one path is accepted |
+| Flags | `hnd --some-flag src` | ❌ | The command has no flags |
+| Pipeline input | <code>'/repo' &#124; hnd</code> | ❌ | Pipeline input is not accepted |
+
 ## How `hnd` decides
 
 > [!WARNING]
@@ -114,14 +135,12 @@ unless the action is a downward directory change.
 ### Idle panes
 
 A pane is reused only when its foreground directory is the exact target and it
-is idle:
+meets one of these idle conditions:
 
-- a shell pane is idle only when process info proves the interactive shell
-  itself is in the foreground;
-- an agent pane is idle only when its status is `idle` or `done`.
-
-Incomplete process information, `working`, `blocked`, and `unknown` agent
-states are never treated as idle.
+| Pane type | Treated as idle | Not treated as idle |
+| --------- | --------------- | ------------------- |
+| Shell | No agent is detected and process info proves the interactive shell itself is in the foreground | Process info is incomplete or another foreground process is active |
+| Agent | Its status is exactly `idle` or `done` | Its status is `working`, `blocked`, or `unknown` |
 
 When several idle panes match, `hnd` prefers the caller's tab, then the
 workspace's focused tab, then snapshot list order.
@@ -147,6 +166,8 @@ behavior.
 
 ### Experimental dynamic completion
 
+![Dynamic completion showing workspace and directory candidates](assets/dynamic_completion.webp)
+
 Directory completion is experimental and off by default. Enable it in
 `config.nu`:
 
@@ -167,11 +188,12 @@ Descriptions are informational; `hnd` re-reads live state before it focuses a
 pane or creates a resource. Outside Herdr, and whenever Herdr cannot be
 inspected confidently, completion falls back to native directory completion.
 
-Nushell 0.115 may cache plugin completion results for the same command line.
-Put the opt-in in `config.nu` and start a new session. Changing the setting
-interactively is not guaranteed to refresh an already cached answer. The
-plugin does not implement its own cache and does not require disabling
-Nushell's global completion cache.
+> [!WARNING]
+> Nushell 0.115 may cache plugin completion results for the same command line.
+> Put the opt-in in `config.nu` and start a new session. Changing the setting
+> interactively is not guaranteed to refresh an already cached answer. The
+> plugin does not implement its own cache and does not require disabling
+> Nushell's global completion cache.
 
 ## Development
 
