@@ -190,11 +190,12 @@ inspected confidently, completion falls back to native directory completion.
 
 ![Dynamic completion showing workspace and directory candidates](assets/dynamic_completion.webp)
 
-Nushell 0.115 may cache plugin completion results for the same command line.
-Put the opt-in in `config.nu` and start a new session. Changing the setting
-interactively is not guaranteed to refresh an already cached answer. The
-plugin does not implement its own cache and does not require disabling
-Nushell's global completion cache.
+> [!WARNING]
+> Nushell 0.115 may cache plugin completion results for the same command line.
+> Put the opt-in in `config.nu` and start a new session. Changing the setting
+> interactively is not guaranteed to refresh an already cached answer. The
+> plugin does not implement its own cache and does not require disabling
+> Nushell's global completion cache.
 
 ## Development
 
