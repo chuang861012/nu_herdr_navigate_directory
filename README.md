@@ -1,18 +1,17 @@
 # nu_herdr_navigate_directory
 
+> [!NOTE]
+> This is a Nushell plugin that integrates with Herdr. It is not a Herdr
+> plugin.
+
 Herdr-aware directory navigation for Nushell.
+Inside Herdr, it reuses idle panes when possible to avoid creating unnecessary tabs.
 
 ```nu
 hnd [path: directory] -> nothing
 ```
 
-Run `hnd` with no path for home, use `hnd -` for the previous directory, or
-point it at another directory. It picks the least disruptive move: stay in
-this pane when you go deeper, jump to an idle pane already there, or open a new
-tab or workspace. Success is silent.
-
-See [the system design](docs/system-design.md) for architecture, constraints,
-and verification. Notable changes are in the [changelog](CHANGELOG.md).
+Notable changes are in the [changelog](CHANGELOG.md).
 
 ## Prerequisites
 
@@ -21,23 +20,20 @@ and verification. Notable changes are in the [changelog](CHANGELOG.md).
 - Nushell 0.115
 - Herdr 0.8.2 or later inside a Herdr session
 
-Inside Herdr, `hnd` uses only the caller-injected `HERDR_BIN_PATH`. It never
-searches `PATH`. Incomplete Herdr context is an error, not a fallback to
-ordinary directory change.
+Inside Herdr, `hnd` requires the caller-provided `HERDR_BIN_PATH`. It never
+searches `PATH` or falls back to an ordinary directory change when Herdr
+context is invalid.
 
 ## Install
 
 ```text
-cargo install --git https://github.com/chuang861012/nu_herdr_navigate_directory nu_plugin_herdr_navigate_directory
+cargo install --git https://github.com/chuang861012/nu_herdr_navigate_directory --tag 0.2.0 nu_plugin_herdr_navigate_directory
 ```
 
-Add `--tag <version>` to install a source release instead of the default
-branch. The 0.1.1 tag still ships the previous `hcd` /
-`nu_plugin_herdr_cd` names.
+Omit `--tag 0.2.0` to install the default branch. The 0.1.1 tag uses the
+previous `hcd` and `nu_plugin_herdr_cd` names.
 
-Register the installed binary in Nushell. `plugin add` looks in the current
-directory and `NU_PLUGIN_DIRS`; it does not search `PATH`. Cargo's default
-install location is `~/.cargo/bin`:
+Register the binary using Cargo's default install path:
 
 ```nu
 plugin add ~/.cargo/bin/nu_plugin_herdr_navigate_directory
@@ -45,56 +41,42 @@ plugin use herdr_navigate_directory
 hnd ~
 ```
 
-If Cargo's bin directory is not `~/.cargo/bin`, pass that path instead. To
-register by filename alone, add the bin directory to `NU_PLUGIN_DIRS` first.
-
-From a local checkout, use `cargo install --path .` instead. `plugin add` is
-not required again after a Nushell restart if the plugin remains in the
-registry.
+Use your actual Cargo bin directory if it differs from `~/.cargo/bin`. For a
+local checkout, install with `cargo install --path .`.
 
 ## Supported path forms
 
 `hnd` intentionally supports a smaller set of path forms than Nushell's `cd`:
 
-| Path form | Example | Supported | Notes |
-| --------- | ------- | --------- | ----- |
-| Relative path | `hnd src` | ✅ | Resolved against the caller's current directory |
-| Parent or current directory | `hnd ..`, `hnd .` | ✅ | `.` and `..` are resolved before navigation |
-| Absolute path | `hnd /repo/src` | ✅ | Must point to an existing, enterable directory |
-| Home directory | `hnd ~` | ✅ | Requires the caller's home directory to be available |
-| Home-relative path | `hnd ~/src` | ✅ | Only a leading `~/` is expanded |
-| Path containing spaces | `hnd "my dir"` | ✅ | Quote the path using normal Nushell syntax |
-| Symbolic-link path | `hnd linked-dir` | ✅ | Resolved to its canonical physical directory |
-| No path | `hnd` | ✅ | Uses the caller's `HOME`; it must be a non-empty absolute path |
-| Previous directory | `hnd -` | ✅ | Uses absolute caller `OLDPWD`, or the current directory when `OLDPWD` is absent |
-| Literal directory named `-` | `hnd ./-` | ✅ | A bare `-` is reserved; `./-` and absolute paths remain literal paths |
-| Named-user home | `hnd ~otheruser` | ❌ | `~otheruser` expansion is not implemented |
-| Glob | `hnd */src` | ❌ | Glob expansion is not implemented |
-| Multiple paths | `hnd src tests` | ❌ | At most one path is accepted |
-| Flags | `hnd --some-flag src` | ❌ | The command has no flags |
-| Pipeline input | <code>'/repo' &#124; hnd</code> | ❌ | Pipeline input is not accepted |
+| Path form                   | Example                         | Supported | Notes                                                                           |
+| --------------------------- | ------------------------------- | --------- | ------------------------------------------------------------------------------- |
+| Relative path               | `hnd src`                       | ✅        | Resolved against the caller's current directory                                 |
+| Parent or current directory | `hnd ..`, `hnd .`               | ✅        | `.` and `..` are resolved before navigation                                     |
+| Absolute path               | `hnd /repo/src`                 | ✅        | Must point to an existing, enterable directory                                  |
+| Home directory              | `hnd ~`                         | ✅        | Requires the caller's home directory to be available                            |
+| Home-relative path          | `hnd ~/src`                     | ✅        | Only a leading `~/` is expanded                                                 |
+| Path containing spaces      | `hnd "my dir"`                  | ✅        | Quote the path using normal Nushell syntax                                      |
+| Symbolic-link path          | `hnd linked-dir`                | ✅        | Resolved to its canonical physical directory                                    |
+| No path                     | `hnd`                           | ✅        | Uses the caller's `HOME`; it must be a non-empty absolute path                  |
+| Previous directory          | `hnd -`                         | ✅        | Uses absolute caller `OLDPWD`, or the current directory when `OLDPWD` is absent |
+| Literal directory named `-` | `hnd ./-`                       | ✅        | A bare `-` is reserved; `./-` and absolute paths remain literal paths           |
+| Named-user home             | `hnd ~otheruser`                | ❌        | `~otheruser` expansion is not implemented                                       |
+| Glob                        | `hnd */src`                     | ❌        | Glob expansion is not implemented                                               |
+| Multiple paths              | `hnd src tests`                 | ❌        | At most one path is accepted                                                    |
+| Flags                       | `hnd --some-flag src`           | ❌        | The command has no flags                                                        |
+| Pipeline input              | <code>'/repo' &#124; hnd</code> | ❌        | Pipeline input is not accepted                                                  |
 
 ## How `hnd` decides
 
-The selected target must exist, be an enterable directory, and resolve to a
-canonical UTF-8 path. `~` and a leading `~/` are expanded from the caller's
-`HOME`. Relative paths are resolved against the caller's cwd. `hnd` also reads
-`HOME` and `OLDPWD` from the caller, never from the plugin process.
-
-An omitted path requires a valid `HOME`. A present `OLDPWD` must be a
-non-empty absolute string and a usable directory; malformed values fail with
-`invalid_path`. If `OLDPWD` is absent, `hnd -` selects the canonical current
-directory, matching Nushell 0.115's effective fallback.
+The target must be an existing, enterable directory with a canonical UTF-8
+path. Relative paths use the caller's current directory; `~`, `HOME`, and
+`OLDPWD` come from the calling Nushell scope.
 
 ### Outside Herdr
 
-If `HERDR_ENV` is absent, `hnd` writes the canonical caller cwd to
-`$env.OLDPWD`, then sets `$env.PWD` to the canonical target. This establishes
-history for a later `hnd -`; repeated successful `hnd -` calls toggle between
-the two directories. The plugin does not change its own process working
-directory.
-
-Any other `HERDR_ENV` value is an error.
+Outside Herdr, `hnd` saves the current directory in `$env.OLDPWD`, then updates
+`$env.PWD`. Repeated `hnd -` calls therefore toggle between the last two
+directories. `HERDR_ENV` must be absent or exactly `1`.
 
 ### Inside Herdr
 
@@ -119,42 +101,20 @@ flowchart TD
     O -->|No| P[Create and focus a tab at the target]
 ```
 
-In order:
-
-1. If the target is already the caller's directory, do nothing.
-2. If the current workspace already has an idle pane at the exact target,
-   focus that pane. The calling pane's directory does not change.
-3. If the target is a subdirectory of the current directory, change directory
-   in the current pane.
-4. Otherwise, use the nearest Herdr workspace whose root contains the target:
-   - focus an idle pane already at the exact target, or
-   - create and focus a new tab at the target.
-5. If no workspace contains the target, create and focus a new workspace
-   there.
-
-Going to a parent or sibling never changes the current pane's directory. Busy
-panes at the target are skipped; they do not block a directory change or the
-creation of a new tab or workspace.
-
-Created tabs and workspaces are focused. The calling pane stays where it is
-unless the action is a downward directory change. `NoOp`, focus, and create
-actions leave both its `PWD` and `OLDPWD` unchanged; only a real directory
-change rotates history.
-
-Nushell's plugin SDK updates one caller variable at a time, so the history
-pair cannot be atomic. If writing `OLDPWD` fails, `PWD` is not attempted. If
-the later `PWD` write fails, `hnd` reports the failure and warns that `OLDPWD`
-may already have changed; it does not attempt an unsafe rollback.
+`hnd` reuses only idle panes at the exact target path; busy panes are skipped.
+Parent and sibling navigation never changes the current pane, while downward
+navigation may. Focusing or creating a Herdr resource leaves `PWD` and
+`OLDPWD` unchanged.
 
 ### Idle panes
 
 A pane is reused only when its foreground directory is the exact target and it
 meets one of these idle conditions:
 
-| Pane type | Treated as idle | Not treated as idle |
-| --------- | --------------- | ------------------- |
-| Shell | No agent is detected and process info proves the interactive shell itself is in the foreground | Process info is incomplete or another foreground process is active |
-| Agent | Its status is selected by `idle_agent_statuses`; the default is `idle` or `done` | Its status is not selected, or is `unknown` |
+| Pane type | Treated as idle                                                                                | Not treated as idle                                                |
+| --------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Shell     | No agent is detected and process info proves the interactive shell itself is in the foreground | Process info is incomplete or another foreground process is active |
+| Agent     | Its status is selected by `idle_agent_statuses`; the default is `idle` or `done`               | Its status is not selected, or is `unknown`                        |
 
 When several idle panes match, `hnd` prefers the caller's tab, then the
 workspace's focused tab, then snapshot list order. Every selected agent status
@@ -181,73 +141,37 @@ $env.config.plugins.herdr_navigate_directory = {
 }
 ```
 
-`idle_agent_statuses` controls which detected agent panes may be reused at an
-exact target path. It accepts only the exact lowercase values `idle`, `done`,
-`blocked`, and `working`. Entries have set semantics: duplicates and order do
-not affect selection. An empty list disables agent-pane reuse while preserving
-reuse of shell panes whose process information proves the interactive shell is
-idle. `unknown` can never be selected.
+`idle_agent_statuses` accepts `idle`, `done`, `blocked`, and `working`. Order
+and duplicates do not matter. An empty list disables agent-pane reuse while
+still allowing reuse of proven-idle shell panes.
 
 > [!WARNING]
 > Selecting `blocked` or `working` intentionally allows `hnd` to focus and
 > reuse panes in those states. The focus is a silent successful action.
 
-The record may contain only `dynamic_completion` and `idle_agent_statuses`.
-Inside Herdr, an unreadable config, non-record config, unknown key, invalid list
-or member type, or unsupported status returns `invalid_configuration` before
-any Herdr operation or directory change. Outside Herdr, `hnd` does not read or
-validate plugin configuration. Execution reads the latest configuration once
-on every invocation, including the one allowed state recomputation.
+Inside Herdr, configuration is strict: unknown keys and invalid or unreadable
+values fail before any Herdr action. Outside Herdr, configuration is ignored.
+Execution reloads it on every invocation.
 
 ### Experimental dynamic completion
 
 ![Dynamic completion showing workspace and directory candidates](assets/dynamic_completion.webp)
 
-Directory completion is experimental and off by default. Enable it in
-`config.nu`:
+Dynamic completion is experimental and disabled by default. Enable it by
+changing `dynamic_completion` to `true` in the configuration above.
 
-```nu
-$env.config.plugins.herdr_navigate_directory = {
-  dynamic_completion: true
-  idle_agent_statuses: [idle done]
-}
-```
+Inside Herdr, completion can add workspace roots, pane directories, and direct
+child directories. It falls back to native Nushell completion outside Herdr or
+when inspection fails, and it never changes `hnd` execution.
 
-Only the boolean `true` turns it on. A missing key, `false`, another type, or an
-invalid or unreadable plugin config leaves native Nushell directory completion
-in place. This flag never changes what `hnd` does when you press Enter.
+A typed `-` is the previous-directory sentinel and performs no completion
+lookup. Use `./-` for a literal directory named `-`.
 
-An exact typed `-` is the runtime previous-directory sentinel, so dynamic
-completion does not query Herdr or the filesystem for it. `./-` and absolute
-paths ending in `/-` retain normal directory completion.
-
-When enabled inside Herdr, Tab may show workspace roots and pane foreground
-directories from the current session alongside direct child directories.
-All valid pane paths remain candidates. When duplicate physical paths merge,
-`idle_agent_statuses` gives selected statuses reusable-source strength while
-descriptions keep the real state, such as `agent blocked`. Descriptions are
-informational; `hnd` re-reads live state and current configuration before it
-focuses a pane or creates a resource. Outside Herdr, and whenever Herdr cannot
-be inspected confidently, completion falls back to native directory
-completion.
-
-> [!WARNING]
-> Nushell 0.115 may cache plugin completion results for the same command line.
-> Put the opt-in in `config.nu` and start a new session. Changing the setting
-> interactively is not guaranteed to refresh an already cached answer. The
-> plugin does not implement its own cache and does not require disabling
-> Nushell's global completion cache. This caching caveat applies to completion
-> only; `hnd` execution reads current configuration on every invocation.
->
-> If fresh completion results are more important than cache performance, you
-> can disable Nushell's completion cache in `config.nu`:
->
-> ```nu
-> $env.config.completions.cache_size = 0
-> ```
->
-> This is optional and affects every Nushell completion, not only `hnd`. It may
-> increase completion latency, so evaluate the tradeoff for your workflow.
+> [!NOTE]
+> Nushell 0.115 may cache plugin completion results. Put the setting in
+> `config.nu` and start a new session after changing it. Setting
+> `$env.config.completions.cache_size = 0` provides fresher results but disables
+> caching for all Nushell completion and may increase latency.
 
 ## Development
 
@@ -258,14 +182,9 @@ cargo test --locked --all-targets --all-features
 cargo build --release
 ```
 
-Automated tests do not require an installed Herdr, a running Herdr session, or
-changes to the local Nushell plugin registry. They use fake CLI and Unix socket
-transports.
-
-GitHub Actions build and test on Linux and macOS for Rust 1.95.0 and latest
-stable, using `--locked`. They also run formatting and warning-denied Clippy
-on Linux. The workflow has read-only default permissions and does not publish,
-deploy, or upload releases.
+Tests use fake CLI and Unix socket transports, so they do not require Herdr or
+changes to the Nushell plugin registry. CI runs the locked test suite on Linux
+and macOS with Rust 1.95.0 and stable; it does not publish or deploy.
 
 During development, register the release binary from the checkout:
 
