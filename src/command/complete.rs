@@ -635,6 +635,7 @@ esac
         let src_str = src.to_str().unwrap();
         let (snapshot, current) = snapshot_and_current_with(root_str, src_str, "blocked", "");
         let (dir, bin) = install_fake(&snapshot, &current);
+        warmup_herdr(&bin);
 
         let mut configured = enabled_inside(root_str, &bin);
         configured.config = Ok(Some(Value::test_record(record! {

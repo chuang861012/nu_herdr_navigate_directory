@@ -255,7 +255,6 @@ plugin use herdr_navigate_directory
 ## Future work
 
 - Windows support
-- Configuration
 - Extra `cd` forms
 - Directory creation
 - crates.io or Homebrew packages
