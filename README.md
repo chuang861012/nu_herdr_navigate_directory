@@ -70,7 +70,7 @@ registry.
 | Literal directory named `-` | `hnd ./-` | ✅ | A bare `-` is reserved; `./-` and absolute paths remain literal paths |
 | Named-user home | `hnd ~otheruser` | ❌ | `~otheruser` expansion is not implemented |
 | Glob | `hnd */src` | ❌ | Glob expansion is not implemented |
-| Multiple paths | `hnd src tests` | ❌ | Exactly one path is accepted |
+| Multiple paths | `hnd src tests` | ❌ | At most one path is accepted |
 | Flags | `hnd --some-flag src` | ❌ | The command has no flags |
 | Pipeline input | <code>'/repo' &#124; hnd</code> | ❌ | Pipeline input is not accepted |
 

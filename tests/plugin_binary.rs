@@ -197,6 +197,8 @@ fn compiled_binary_accepts_no_path_and_updates_home_history() {
     let root = unique_temp("no-path-execution");
     let home = root.join("home");
     fs::create_dir(&home).expect("create home directory");
+    let canonical_root = fs::canonicalize(&root).expect("canonicalize root directory");
+    let canonical_home = fs::canonicalize(&home).expect("canonicalize home directory");
     let writes = Arc::new(Mutex::new(Vec::new()));
     let mut env = HashMap::new();
     env.insert(
@@ -263,8 +265,14 @@ fn compiled_binary_accepts_no_path_and_updates_home_history() {
     assert_eq!(
         *writes.lock().expect("environment writes"),
         vec![
-            ("OLDPWD".into(), root.to_str().unwrap().into()),
-            ("PWD".into(), home.to_str().unwrap().into()),
+            (
+                "OLDPWD".into(),
+                canonical_root.to_str().expect("root is UTF-8").into(),
+            ),
+            (
+                "PWD".into(),
+                canonical_home.to_str().expect("home is UTF-8").into(),
+            ),
         ]
     );
 
