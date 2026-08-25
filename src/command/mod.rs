@@ -15,11 +15,11 @@ use nu_plugin::{
     SimplePluginCommand,
 };
 use nu_protocol::{
-    Category, DynamicSuggestion, LabeledError, ShellError, Signature, Span, SyntaxShape, Type,
-    Value, engine::ArgType,
+    Category, DynamicSuggestion, Example, LabeledError, ShellError, Signature, Span, SyntaxShape,
+    Type, Value, engine::ArgType,
 };
 
-use crate::domain::{Error, ErrorKind, resolve_paths};
+use crate::domain::{CanonicalPath, Error, ErrorKind, ResolvedPaths, resolve_target};
 use crate::herdr::{
     EnvValue, HerdrMode, RunError, classify_herdr_env, inside_context, run_bounded,
 };
@@ -32,6 +32,7 @@ trait CallerEngine: Clone + Send + 'static {
     fn interrupted(&self) -> bool;
     fn current_dir(&self) -> Result<String, Error>;
     fn env_var(&self, name: &str) -> Result<Option<Value>, Error>;
+    fn path_env_var(&self, name: &str) -> Result<Option<Value>, Error>;
     fn env_vars(&self) -> Result<HashMap<String, Value>, Error>;
     fn add_env_var(&self, name: &str, value: Value) -> Result<(), Error>;
     fn plugin_config(&self) -> Result<Option<Value>, Error>;
@@ -52,6 +53,11 @@ impl CallerEngine for EngineInterface {
             .map_err(|_| Error::invalid_herdr_context("caller environment is unavailable"))
     }
 
+    fn path_env_var(&self, name: &str) -> Result<Option<Value>, Error> {
+        self.get_env_var(name)
+            .map_err(|_| Error::invalid_path(format!("caller {name} is unavailable")))
+    }
+
     fn env_vars(&self) -> Result<HashMap<String, Value>, Error> {
         self.get_env_vars()
             .map_err(|_| Error::invalid_herdr_context("caller environment is unavailable"))
@@ -69,6 +75,13 @@ impl CallerEngine for EngineInterface {
 }
 
 const COMMAND_NAME: &str = "hnd";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TargetRequest {
+    Home,
+    Previous,
+    Explicit(String),
+}
 
 /// Plugin process that registers exactly one public command, `hnd`.
 pub struct HerdrNavigateDirectoryPlugin;
@@ -97,15 +110,39 @@ impl SimplePluginCommand for Hnd {
     }
 
     fn extra_description(&self) -> &str {
-        "Outside Herdr, hnd updates $env.PWD. Inside Herdr, it reuses an eligible pane, changes directory only for downward navigation, or creates a focused tab or workspace. Configure reusable agent states with $env.config.plugins.herdr_navigate_directory.idle_agent_statuses; the default is [idle done]. Successful calls return nothing. Experimental opt-in dynamic completion can enrich the directory argument with live Herdr workspace and pane paths; it is not an action preview."
+        "With no path, hnd navigates to the caller's $env.HOME. A bare - selects $env.OLDPWD, falling back to the current directory when OLDPWD is absent; use ./- for a literal directory named -. Every directory change writes the canonical old directory to $env.OLDPWD before updating $env.PWD. Outside Herdr, hnd changes the calling pane's directory. Inside Herdr, it reuses an eligible pane, changes directory only for downward navigation, or creates a focused tab or workspace; focus and create actions leave PWD and OLDPWD unchanged. Configure reusable agent states with $env.config.plugins.herdr_navigate_directory.idle_agent_statuses; the default is [idle done]. Successful calls return nothing. Experimental opt-in dynamic completion can enrich the directory argument with live Herdr workspace and pane paths; it is not an action preview."
     }
 
     fn signature(&self) -> Signature {
         Signature::build(COMMAND_NAME)
-            .required("path", SyntaxShape::Directory, "Directory to navigate to")
+            .optional(
+                "path",
+                SyntaxShape::Directory,
+                "Directory to navigate to; omit for home or use - for the previous directory",
+            )
             .input_output_type(Type::Nothing, Type::Nothing)
             .allow_variants_without_examples(true)
             .category(Category::FileSystem)
+    }
+
+    fn examples(&self) -> Vec<Example<'_>> {
+        vec![
+            Example {
+                example: "hnd",
+                description: "Navigate to the caller's home directory",
+                result: None,
+            },
+            Example {
+                example: "hnd -",
+                description: "Navigate to the caller's previous directory",
+                result: None,
+            },
+            Example {
+                example: "hnd ./-",
+                description: "Navigate to a literal child directory named -",
+                result: None,
+            },
+        ]
     }
 
     #[expect(deprecated, reason = "forwarding experimental status")]
@@ -147,17 +184,15 @@ fn run_hnd(
         ));
     }
 
-    let target: String = call.req(0)?;
+    let request = decode_target_request(call)?;
     let path_span = call.nth(0).map(|value| value.span()).unwrap_or(call.head);
     let to_labeled = |error: Error| labeled_error(&error, path_span, call.head);
     let halt = || interrupted() || Instant::now() >= deadline;
 
     let engine_worker = engine.clone();
-    let target_worker = target;
+    let request_worker = request;
     let (paths, mode) = match run_bounded(&halt, move || {
-        let caller_cwd = engine_worker.current_dir()?;
-        let home = read_home(&engine_worker)?;
-        let paths = resolve_paths(Path::new(&caller_cwd), &target_worker, home.as_deref())?;
+        let paths = resolve_target_request(&engine_worker, &request_worker)?;
         let mode = read_herdr_mode(&engine_worker)?;
         Ok::<_, Error>((paths, mode))
     }) {
@@ -184,14 +219,58 @@ fn run_hnd(
     check(&interrupted, deadline).map_err(&fail)?;
 
     match orchestrate(&paths, &mode, &policy, &interrupted, deadline) {
-        Ok(outcome) => apply_outcome(engine, outcome, call.head, path_span, &halt, &interrupted),
+        Ok(outcome) => apply_outcome(
+            engine,
+            outcome,
+            &paths,
+            call.head,
+            path_span,
+            &halt,
+            &interrupted,
+        ),
         Err(error) => Err(fail(error)),
     }
+}
+
+fn decode_target_request(call: &EvaluatedCall) -> Result<TargetRequest, LabeledError> {
+    match call.opt::<String>(0)? {
+        None => Ok(TargetRequest::Home),
+        Some(target) if target == "-" => Ok(TargetRequest::Previous),
+        Some(target) => Ok(TargetRequest::Explicit(target)),
+    }
+}
+
+fn resolve_target_request(
+    engine: &impl CallerEngine,
+    request: &TargetRequest,
+) -> Result<ResolvedPaths, Error> {
+    let caller_cwd_raw = engine.current_dir()?;
+    let caller_cwd = CanonicalPath::directory(Path::new(&caller_cwd_raw))?;
+    let target = match request {
+        TargetRequest::Home => {
+            let home = required_absolute_path_env(engine, "HOME")?;
+            resolve_target(&caller_cwd, &home, None)?
+        }
+        TargetRequest::Previous => match optional_absolute_path_env(engine, "OLDPWD")? {
+            Some(previous) => resolve_target(&caller_cwd, &previous, None)?,
+            None => caller_cwd.clone(),
+        },
+        TargetRequest::Explicit(target) => {
+            let home = if target == "~" || target.starts_with("~/") {
+                read_home(engine)?
+            } else {
+                None
+            };
+            resolve_target(&caller_cwd, target, home.as_deref())?
+        }
+    };
+    Ok(ResolvedPaths { caller_cwd, target })
 }
 
 fn apply_outcome(
     engine: &impl CallerEngine,
     outcome: Outcome,
+    paths: &ResolvedPaths,
     head: Span,
     path_span: Span,
     halt: &dyn Fn() -> bool,
@@ -208,8 +287,22 @@ fn apply_outcome(
                 ));
             }
             engine
-                .add_env_var("PWD", Value::string(path.as_str(), path_span))
+                .add_env_var(
+                    "OLDPWD",
+                    Value::string(paths.caller_cwd.as_str(), path_span),
+                )
                 .map_err(|error| labeled_error(&error, path_span, head))?;
+            engine
+                .add_env_var("PWD", Value::string(path.as_str(), path_span))
+                .map_err(|_| {
+                    labeled_error(
+                        &Error::invalid_path(
+                            "failed to update the caller working directory; OLDPWD may already have changed",
+                        ),
+                        path_span,
+                        head,
+                    )
+                })?;
             Ok(Value::nothing(head))
         }
     }
@@ -274,10 +367,37 @@ fn read_herdr_mode(engine: &impl CallerEngine) -> Result<HerdrMode, Error> {
 }
 
 fn read_home(engine: &impl CallerEngine) -> Result<Option<String>, Error> {
-    match engine.env_var("HOME")? {
+    match engine.path_env_var("HOME")? {
         Some(Value::String { val, .. }) if !val.is_empty() => Ok(Some(val)),
         _ => Ok(None),
     }
+}
+
+fn required_absolute_path_env(engine: &impl CallerEngine, name: &str) -> Result<String, Error> {
+    optional_absolute_path_env(engine, name)?.ok_or_else(|| {
+        Error::invalid_path(format!("{name} is missing from the caller environment"))
+    })
+}
+
+fn optional_absolute_path_env(
+    engine: &impl CallerEngine,
+    name: &str,
+) -> Result<Option<String>, Error> {
+    let Some(value) = engine.path_env_var(name)? else {
+        return Ok(None);
+    };
+    let Value::String { val, .. } = value else {
+        return Err(Error::invalid_path(format!("{name} must be a string")));
+    };
+    if val.is_empty() {
+        return Err(Error::invalid_path(format!("{name} must not be empty")));
+    }
+    if !Path::new(&val).is_absolute() {
+        return Err(Error::invalid_path(format!(
+            "{name} must be an absolute path"
+        )));
+    }
+    Ok(Some(val))
 }
 
 fn nu_value_to_env(value: &Value) -> EnvValue {
@@ -308,16 +428,18 @@ fn labeled_error_at(error: &Error, span: Span) -> LabeledError {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMMAND_NAME, CallerEngine, HerdrNavigateDirectoryPlugin, Hnd, apply_outcome,
-        labeled_error, nu_value_to_env, platform_is_supported, run_hnd,
+        COMMAND_NAME, CallerEngine, HerdrNavigateDirectoryPlugin, Hnd, TargetRequest,
+        apply_outcome, decode_target_request, labeled_error, nu_value_to_env,
+        platform_is_supported, resolve_target_request, run_hnd,
     };
     use crate::PLUGIN_IDENTITY;
     use crate::command::orchestrate::{Outcome, TOTAL_DEADLINE};
-    use crate::domain::{CanonicalPath, Error, ErrorKind};
+    use crate::domain::{CanonicalPath, Error, ErrorKind, ResolvedPaths};
     use crate::herdr::test_support::{TempDir, lock_cli, write_executable};
     use crate::herdr::{EnvValue, classify_herdr_env};
     use nu_plugin::{EvaluatedCall, Plugin, PluginCommand};
     use nu_protocol::{Span, SyntaxShape, Type, Value};
+    use serde_json::json;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -343,13 +465,13 @@ mod tests {
 
         let signature = command.signature();
         assert_eq!(signature.name, COMMAND_NAME);
-        assert_eq!(signature.required_positional.len(), 1);
-        assert_eq!(signature.required_positional[0].name, "path");
+        assert!(signature.required_positional.is_empty());
+        assert_eq!(signature.optional_positional.len(), 1);
+        assert_eq!(signature.optional_positional[0].name, "path");
         assert_eq!(
-            signature.required_positional[0].shape,
+            signature.optional_positional[0].shape,
             SyntaxShape::Directory
         );
-        assert!(signature.optional_positional.is_empty());
         assert!(signature.rest_positional.is_none());
         assert!(
             signature
@@ -378,7 +500,11 @@ mod tests {
         interrupted: Arc<AtomicBool>,
         interrupt_after: Option<Instant>,
         cwd_delay: Duration,
+        path_env_delays: HashMap<String, Duration>,
+        path_env_failures: HashMap<String, Error>,
         pwd_delay: Duration,
+        oldpwd_delay: Duration,
+        write_failures: HashMap<String, Error>,
         env_writes: Arc<Mutex<Vec<(String, String)>>>,
         cwd_calls: Arc<AtomicUsize>,
         plugin_config: Result<Option<Value>, Error>,
@@ -394,7 +520,11 @@ mod tests {
                 interrupted: Arc::new(AtomicBool::new(false)),
                 interrupt_after: None,
                 cwd_delay: Duration::ZERO,
+                path_env_delays: HashMap::new(),
+                path_env_failures: HashMap::new(),
                 pwd_delay: Duration::ZERO,
+                oldpwd_delay: Duration::ZERO,
+                write_failures: HashMap::new(),
                 env_writes: Arc::new(Mutex::new(Vec::new())),
                 cwd_calls: Arc::new(AtomicUsize::new(0)),
                 plugin_config: Ok(None),
@@ -433,13 +563,31 @@ mod tests {
             Ok(self.env.get(name).cloned())
         }
 
+        fn path_env_var(&self, name: &str) -> Result<Option<Value>, Error> {
+            if let Some(delay) = self.path_env_delays.get(name) {
+                thread::sleep(*delay);
+            }
+            if let Some(error) = self.path_env_failures.get(name) {
+                return Err(error.clone());
+            }
+            Ok(self.env.get(name).cloned())
+        }
+
         fn env_vars(&self) -> Result<HashMap<String, Value>, Error> {
             Ok(self.env.clone())
         }
 
         fn add_env_var(&self, name: &str, value: Value) -> Result<(), Error> {
-            if !self.pwd_delay.is_zero() {
-                thread::sleep(self.pwd_delay);
+            let delay = match name {
+                "OLDPWD" => self.oldpwd_delay,
+                "PWD" => self.pwd_delay,
+                _ => Duration::ZERO,
+            };
+            if !delay.is_zero() {
+                thread::sleep(delay);
+            }
+            if let Some(error) = self.write_failures.get(name) {
+                return Err(error.clone());
             }
             let rendered = match &value {
                 Value::String { val, .. } => val.clone(),
@@ -468,6 +616,10 @@ mod tests {
         EvaluatedCall::new(Span::test_data()).with_positional(Value::test_string(path))
     }
 
+    fn test_call_without_path() -> EvaluatedCall {
+        EvaluatedCall::new(Span::test_data())
+    }
+
     fn inside_engine(cwd: &str, bin: &str, socket: &str) -> FakeEngine {
         let mut engine = FakeEngine::outside(cwd);
         for (name, value) in [
@@ -486,15 +638,20 @@ mod tests {
     }
 
     #[test]
-    fn successful_output_is_nothing_and_change_directory_is_the_only_pwd_mutation() {
+    fn successful_output_is_nothing_and_only_change_directory_mutates_history() {
         let cwd = std::env::temp_dir();
         let cwd_str = cwd.to_str().expect("temp dir is UTF-8");
         let path = CanonicalPath::directory(&cwd).unwrap();
+        let paths = ResolvedPaths {
+            caller_cwd: path.clone(),
+            target: path.clone(),
+        };
 
         let silent = FakeEngine::outside(cwd_str);
         let value = apply_outcome(
             &silent,
             Outcome::Silent,
+            &paths,
             Span::test_data(),
             Span::test_data(),
             &|| false,
@@ -508,6 +665,7 @@ mod tests {
         let value = apply_outcome(
             &changed,
             Outcome::ChangeDirectory { path: path.clone() },
+            &paths,
             Span::test_data(),
             Span::test_data(),
             &|| false,
@@ -517,7 +675,10 @@ mod tests {
         assert!(value.is_nothing());
         assert_eq!(
             changed.writes().as_slice(),
-            [("PWD".to_string(), path.as_str().to_string())]
+            [
+                ("OLDPWD".to_string(), path.as_str().to_string()),
+                ("PWD".to_string(), path.as_str().to_string())
+            ]
         );
 
         let engine = FakeEngine::outside(cwd_str);
@@ -530,7 +691,432 @@ mod tests {
         assert!(value.is_nothing());
         assert_eq!(
             engine.writes().as_slice(),
-            [("PWD".to_string(), path.as_str().to_string())]
+            [
+                ("OLDPWD".to_string(), path.as_str().to_string()),
+                ("PWD".to_string(), path.as_str().to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn target_requests_use_caller_home_previous_and_literal_dash_paths() {
+        let dir = TempDir::new("target-request");
+        let cwd = dir.path().join("cwd");
+        let home = dir.path().join("home");
+        let previous = dir.path().join("previous");
+        let literal_dash = cwd.join("-");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&previous).unwrap();
+        std::fs::create_dir_all(&literal_dash).unwrap();
+        let home_link = dir.path().join("home-link");
+        std::os::unix::fs::symlink(&home, &home_link).unwrap();
+
+        let mut engine = FakeEngine::outside(cwd.to_str().unwrap());
+        engine.env.insert(
+            "HOME".into(),
+            Value::test_string(home_link.to_str().unwrap()),
+        );
+        engine.env.insert(
+            "OLDPWD".into(),
+            Value::test_string(previous.to_str().unwrap()),
+        );
+
+        let cases = [
+            (
+                TargetRequest::Home,
+                CanonicalPath::directory(&home).unwrap(),
+            ),
+            (
+                TargetRequest::Previous,
+                CanonicalPath::directory(&previous).unwrap(),
+            ),
+            (
+                TargetRequest::Explicit("./-".into()),
+                CanonicalPath::directory(&literal_dash).unwrap(),
+            ),
+            (
+                TargetRequest::Explicit(literal_dash.to_str().unwrap().into()),
+                CanonicalPath::directory(&literal_dash).unwrap(),
+            ),
+        ];
+        for (request, expected) in cases {
+            let paths = resolve_target_request(&engine, &request).unwrap();
+            assert_eq!(paths.target, expected, "request {request:?}");
+            assert_eq!(paths.caller_cwd, CanonicalPath::directory(&cwd).unwrap());
+        }
+
+        let implicit_home = resolve_target_request(&engine, &TargetRequest::Home).unwrap();
+        let explicit_home =
+            resolve_target_request(&engine, &TargetRequest::Explicit("~".into())).unwrap();
+        assert_eq!(implicit_home, explicit_home);
+
+        engine.env.remove("OLDPWD");
+        let paths = resolve_target_request(&engine, &TargetRequest::Previous).unwrap();
+        assert_eq!(paths.target, paths.caller_cwd);
+    }
+
+    #[test]
+    fn implicit_and_previous_targets_fail_closed_with_their_approved_spans() {
+        let dir = TempDir::new("target-errors");
+        let cwd = dir.path().to_str().unwrap();
+        let head = Span::new(1, 4);
+        let argument = Span::new(10, 11);
+
+        let invalid_values = [
+            Value::string("", Span::test_data()),
+            Value::string("relative", Span::test_data()),
+            Value::test_int(7),
+            Value::string(
+                dir.path().join("missing").to_str().unwrap(),
+                Span::test_data(),
+            ),
+            Value::string(
+                dir.path().join("not-a-directory").to_str().unwrap(),
+                Span::test_data(),
+            ),
+        ];
+        std::fs::write(dir.path().join("not-a-directory"), "file").unwrap();
+        for value in invalid_values {
+            let mut home = FakeEngine::outside(cwd);
+            home.env.insert("HOME".into(), value.clone());
+            let error = run_hnd(
+                &home,
+                &EvaluatedCall::new(head),
+                Instant::now() + TOTAL_DEADLINE,
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.code.as_deref(),
+                Some("herdr_navigate_directory::invalid_path")
+            );
+            assert_eq!(error.labels[0].span, head);
+            assert!(home.writes().is_empty());
+
+            let mut previous = FakeEngine::outside(cwd);
+            previous.env.insert("OLDPWD".into(), value);
+            let call = EvaluatedCall::new(head).with_positional(Value::string("-", argument));
+            let error = run_hnd(&previous, &call, Instant::now() + TOTAL_DEADLINE).unwrap_err();
+            assert_eq!(
+                error.code.as_deref(),
+                Some("herdr_navigate_directory::invalid_path")
+            );
+            assert_eq!(error.labels[0].span, argument);
+            assert!(previous.writes().is_empty());
+        }
+
+        let missing_home = FakeEngine::outside(cwd);
+        let error = run_hnd(
+            &missing_home,
+            &EvaluatedCall::new(head),
+            Instant::now() + TOTAL_DEADLINE,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.code.as_deref(),
+            Some("herdr_navigate_directory::invalid_path")
+        );
+        assert_eq!(error.labels[0].span, head);
+
+        for (name, call) in [
+            ("HOME", EvaluatedCall::new(head)),
+            ("OLDPWD", {
+                EvaluatedCall::new(head).with_positional(Value::string("-", argument))
+            }),
+        ] {
+            let mut lookup_failure = FakeEngine::outside(cwd);
+            lookup_failure.path_env_failures.insert(
+                name.into(),
+                Error::invalid_path("caller environment lookup failed"),
+            );
+            let error =
+                run_hnd(&lookup_failure, &call, Instant::now() + TOTAL_DEADLINE).unwrap_err();
+            assert_eq!(
+                error.code.as_deref(),
+                Some("herdr_navigate_directory::invalid_path")
+            );
+        }
+    }
+
+    #[test]
+    fn no_path_and_previous_navigation_update_and_toggle_history() {
+        let dir = TempDir::new("target-history");
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let first_path = CanonicalPath::directory(&first).unwrap();
+        let second_path = CanonicalPath::directory(&second).unwrap();
+
+        let mut home = FakeEngine::outside(first.to_str().unwrap());
+        home.env
+            .insert("HOME".into(), Value::test_string(second.to_str().unwrap()));
+        run_hnd(
+            &home,
+            &test_call_without_path(),
+            Instant::now() + TOTAL_DEADLINE,
+        )
+        .unwrap();
+        assert_eq!(
+            home.writes(),
+            vec![
+                ("OLDPWD".into(), first_path.as_str().into()),
+                ("PWD".into(), second_path.as_str().into()),
+            ]
+        );
+
+        let mut backward = FakeEngine::outside(second.to_str().unwrap());
+        backward
+            .env
+            .insert("OLDPWD".into(), Value::test_string(first.to_str().unwrap()));
+        run_hnd(&backward, &test_call("-"), Instant::now() + TOTAL_DEADLINE).unwrap();
+        assert_eq!(
+            backward.writes(),
+            vec![
+                ("OLDPWD".into(), second_path.as_str().into()),
+                ("PWD".into(), first_path.as_str().into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn inside_herdr_home_and_missing_previous_use_the_existing_decision_tree() {
+        let _cli = lock_cli();
+        let dir = TempDir::new("inside-target-sources");
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let snapshot = json!({
+            "id": "cli:session:snapshot",
+            "result": {
+                "type": "session_snapshot",
+                "snapshot": {
+                    "version": "0.8.2",
+                    "protocol": 20,
+                    "focused_workspace_id": "w1",
+                    "workspaces": [{
+                        "workspace_id": "w1",
+                        "number": 1,
+                        "label": "main",
+                        "focused": true,
+                        "pane_count": 1,
+                        "tab_count": 1,
+                        "active_tab_id": "w1:t1",
+                        "agent_status": "idle",
+                        "worktree": {
+                            "repo_key": "k",
+                            "repo_name": "n",
+                            "repo_root": cwd,
+                            "checkout_path": cwd,
+                            "is_linked_worktree": true
+                        }
+                    }],
+                    "tabs": [{
+                        "tab_id": "w1:t1",
+                        "workspace_id": "w1",
+                        "number": 1,
+                        "label": "main",
+                        "focused": true,
+                        "pane_count": 1,
+                        "agent_status": "idle"
+                    }],
+                    "panes": [{
+                        "pane_id": "w1:p1",
+                        "terminal_id": "term1",
+                        "workspace_id": "w1",
+                        "tab_id": "w1:t1",
+                        "focused": true,
+                        "agent_status": "idle",
+                        "revision": 1,
+                        "cwd": cwd,
+                        "foreground_cwd": cwd
+                    }],
+                    "layouts": [{
+                        "workspace_id": "w1",
+                        "tab_id": "w1:t1",
+                        "zoomed": false,
+                        "area": {"x": 0, "y": 0, "width": 80, "height": 24},
+                        "focused_pane_id": "w1:p1",
+                        "panes": [],
+                        "splits": []
+                    }],
+                    "agents": []
+                }
+            }
+        });
+        let current = json!({
+            "id": "cli:pane:current",
+            "result": {
+                "type": "pane_current",
+                "pane": {
+                    "pane_id": "w1:p1",
+                    "terminal_id": "term1",
+                    "workspace_id": "w1",
+                    "tab_id": "w1:t1",
+                    "focused": true,
+                    "agent_status": "idle",
+                    "revision": 1,
+                    "foreground_cwd": cwd
+                }
+            }
+        });
+        let bin = write_executable(
+            dir.path(),
+            "herdr",
+            &format!(
+                "#!/bin/sh\nset -eu\ncase \"$1 $2\" in\n  \"api snapshot\") printf '%s\\n' '{}' ;;\n  \"pane current\") printf '%s\\n' '{}' ;;\n  *) exit 99 ;;\nesac\n",
+                snapshot, current
+            ),
+        );
+
+        let mut home_engine = inside_engine(cwd, bin.to_str().unwrap(), "/tmp/hnd-unused.sock");
+        home_engine
+            .env
+            .insert("HOME".into(), Value::test_string(home.to_str().unwrap()));
+        run_hnd(
+            &home_engine,
+            &test_call_without_path(),
+            Instant::now() + TOTAL_DEADLINE,
+        )
+        .unwrap();
+        assert_eq!(
+            home_engine.writes(),
+            vec![
+                (
+                    "OLDPWD".into(),
+                    CanonicalPath::directory(dir.path())
+                        .unwrap()
+                        .as_str()
+                        .into(),
+                ),
+                (
+                    "PWD".into(),
+                    CanonicalPath::directory(&home).unwrap().as_str().into(),
+                ),
+            ]
+        );
+
+        let previous_engine = inside_engine(cwd, bin.to_str().unwrap(), "/tmp/hnd-unused.sock");
+        let value = run_hnd(
+            &previous_engine,
+            &test_call("-"),
+            Instant::now() + TOTAL_DEADLINE,
+        )
+        .unwrap();
+        assert!(value.is_nothing());
+        assert!(previous_engine.writes().is_empty());
+    }
+
+    #[test]
+    fn home_and_previous_reads_honor_deadline_and_interruption() {
+        let dir = TempDir::new("target-read-halt");
+        let cwd = dir.path().to_str().unwrap();
+        for (name, call) in [
+            ("HOME", test_call_without_path()),
+            ("OLDPWD", test_call("-")),
+        ] {
+            let mut engine = FakeEngine::outside(cwd);
+            engine
+                .path_env_delays
+                .insert(name.into(), Duration::from_millis(500));
+            let started = Instant::now();
+            let error =
+                run_hnd(&engine, &call, Instant::now() + Duration::from_millis(30)).unwrap_err();
+            assert_eq!(
+                error.code.as_deref(),
+                Some("herdr_navigate_directory::herdr_timeout")
+            );
+            assert!(started.elapsed() < Duration::from_millis(250));
+            assert!(engine.writes().is_empty());
+
+            let mut interrupted = FakeEngine::outside(cwd);
+            interrupted
+                .path_env_delays
+                .insert(name.into(), Duration::from_millis(500));
+            interrupted.interrupt_after = Some(Instant::now() + Duration::from_millis(30));
+            let started = Instant::now();
+            let error = run_hnd(&interrupted, &call, Instant::now() + TOTAL_DEADLINE).unwrap_err();
+            assert!(error.msg.to_lowercase().contains("interrupt"));
+            assert!(started.elapsed() < Duration::from_millis(250));
+            assert!(interrupted.writes().is_empty());
+        }
+    }
+
+    #[test]
+    fn history_writes_are_one_ordered_critical_section_with_disclosed_partial_failure() {
+        let dir = TempDir::new("history-mutation");
+        let target_dir = dir.path().join("target");
+        std::fs::create_dir(&target_dir).unwrap();
+        let caller_cwd = CanonicalPath::directory(dir.path()).unwrap();
+        let target = CanonicalPath::directory(&target_dir).unwrap();
+        let paths = ResolvedPaths {
+            caller_cwd: caller_cwd.clone(),
+            target: target.clone(),
+        };
+
+        let halt_calls = AtomicUsize::new(0);
+        let engine = FakeEngine::outside(dir.path().to_str().unwrap());
+        apply_outcome(
+            &engine,
+            Outcome::ChangeDirectory {
+                path: target.clone(),
+            },
+            &paths,
+            Span::test_data(),
+            Span::test_data(),
+            &|| halt_calls.fetch_add(1, Ordering::SeqCst) > 0,
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!(halt_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            engine.writes(),
+            vec![
+                ("OLDPWD".into(), caller_cwd.as_str().into()),
+                ("PWD".into(), target.as_str().into()),
+            ]
+        );
+
+        let mut oldpwd_failure = FakeEngine::outside(dir.path().to_str().unwrap());
+        oldpwd_failure.write_failures.insert(
+            "OLDPWD".into(),
+            Error::invalid_path("failed to update the caller working directory"),
+        );
+        assert!(
+            apply_outcome(
+                &oldpwd_failure,
+                Outcome::ChangeDirectory {
+                    path: target.clone()
+                },
+                &paths,
+                Span::test_data(),
+                Span::test_data(),
+                &|| false,
+                &|| false,
+            )
+            .is_err()
+        );
+        assert!(oldpwd_failure.writes().is_empty());
+
+        let mut pwd_failure = FakeEngine::outside(dir.path().to_str().unwrap());
+        pwd_failure.write_failures.insert(
+            "PWD".into(),
+            Error::invalid_path("failed to update the caller working directory"),
+        );
+        let error = apply_outcome(
+            &pwd_failure,
+            Outcome::ChangeDirectory { path: target },
+            &paths,
+            Span::test_data(),
+            Span::test_data(),
+            &|| false,
+            &|| false,
+        )
+        .unwrap_err();
+        assert!(error.msg.contains("OLDPWD may already have changed"));
+        assert_eq!(
+            pwd_failure.writes(),
+            vec![("OLDPWD".into(), caller_cwd.as_str().into())]
         );
     }
 
@@ -721,10 +1307,14 @@ mod tests {
     }
 
     #[test]
-    fn halted_change_directory_does_not_late_write_pwd() {
+    fn halted_change_directory_does_not_late_write_history() {
         let cwd = std::env::temp_dir();
         let cwd_str = cwd.to_str().expect("temp dir is UTF-8");
         let path = CanonicalPath::directory(&cwd).unwrap();
+        let paths = ResolvedPaths {
+            caller_cwd: path.clone(),
+            target: path.clone(),
+        };
         let mut engine = FakeEngine::outside(cwd_str);
         engine.pwd_delay = Duration::from_millis(80);
 
@@ -732,6 +1322,7 @@ mod tests {
         let error = apply_outcome(
             &engine,
             Outcome::ChangeDirectory { path },
+            &paths,
             Span::test_data(),
             Span::test_data(),
             &|| true,
@@ -794,16 +1385,24 @@ mod tests {
     }
 
     #[test]
-    fn directory_argument_is_required_and_decoded_as_a_string() {
+    fn directory_argument_decodes_home_previous_and_explicit_requests() {
         let call = EvaluatedCall::new(Span::test_data())
             .with_positional(Value::test_string("/tmp/project"));
-        let path: String = call.req(0).unwrap();
-        assert_eq!(path, "/tmp/project");
+        assert_eq!(
+            decode_target_request(&call).unwrap(),
+            TargetRequest::Explicit("/tmp/project".into())
+        );
         assert_eq!(call.nth(0).unwrap().span(), Span::test_data());
-        assert!(
-            EvaluatedCall::new(Span::test_data())
-                .req::<String>(0)
-                .is_err()
+        assert_eq!(
+            decode_target_request(&EvaluatedCall::new(Span::test_data())).unwrap(),
+            TargetRequest::Home
+        );
+        assert_eq!(
+            decode_target_request(
+                &EvaluatedCall::new(Span::test_data()).with_positional(Value::test_string("-"))
+            )
+            .unwrap(),
+            TargetRequest::Previous
         );
     }
 
@@ -821,7 +1420,7 @@ mod tests {
     }
 
     #[test]
-    fn home_value_uses_string_env_and_ignores_other_types() {
+    fn environment_value_conversion_distinguishes_strings() {
         assert!(matches!(
             nu_value_to_env(&Value::test_string("/Users/example")),
             EnvValue::String(value) if value == "/Users/example"

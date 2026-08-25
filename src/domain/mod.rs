@@ -13,7 +13,9 @@ pub(crate) use completion::{
     filesystem_path_allowed, merge_candidates, semantic_path_allowed, session_evidence,
 };
 pub(crate) use decision::{decide, nearest_containing_workspace};
-pub(crate) use path::{CanonicalPath, ResolvedPaths, expand_leading_home, resolve_paths};
+#[cfg(test)]
+pub(crate) use path::resolve_paths;
+pub(crate) use path::{CanonicalPath, ResolvedPaths, expand_leading_home, resolve_target};
 pub(crate) use types::{
     Action, AgentIdlePolicy, AgentStatus, Caller, ForegroundProcess, Occupant, Pane, PaneId,
     Session, ShellProcessEvidence, Tab, TabId, Workspace, WorkspaceId,

@@ -4,6 +4,7 @@ use std::io::{BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nu_plugin_core::{Encoder, MsgPackSerializer};
@@ -109,13 +110,13 @@ fn compiled_binary_exposes_metadata_and_hnd_signature() {
     assert_eq!(signatures.len(), 1, "plugin must advertise only hnd");
     let signature = &signatures[0].sig;
     assert_eq!(signature.name, "hnd");
-    assert_eq!(signature.required_positional.len(), 1);
-    assert_eq!(signature.required_positional[0].name, "path");
+    assert!(signature.required_positional.is_empty());
+    assert_eq!(signature.optional_positional.len(), 1);
+    assert_eq!(signature.optional_positional[0].name, "path");
     assert_eq!(
-        signature.required_positional[0].shape,
+        signature.optional_positional[0].shape,
         SyntaxShape::Directory
     );
-    assert!(signature.optional_positional.is_empty());
     assert!(signature.rest_positional.is_none());
     assert!(
         signature
@@ -162,6 +163,126 @@ fn compiled_binary_dynamic_completion_falls_back_when_enabled_outside_herdr() {
 }
 
 #[test]
+fn compiled_binary_keeps_completion_on_the_missing_optional_argument() {
+    let suggestions = request_typed_completion_with(
+        CompletionHarness {
+            plugin_config: None,
+            env: HashMap::new(),
+            cwd: "/tmp".into(),
+            env_writes: Arc::new(Mutex::new(Vec::new())),
+            forbid_engine_calls: false,
+        },
+        None,
+    );
+    assert!(suggestions.is_none());
+}
+
+#[test]
+fn compiled_binary_exact_dash_completion_does_no_engine_work() {
+    let suggestions = request_typed_completion_with(
+        CompletionHarness {
+            plugin_config: Some(Value::test_bool(true)),
+            env: HashMap::new(),
+            cwd: "/must/not/be/read".into(),
+            env_writes: Arc::new(Mutex::new(Vec::new())),
+            forbid_engine_calls: true,
+        },
+        Some("-"),
+    );
+    assert!(suggestions.is_some_and(|items| items.is_empty()));
+}
+
+#[test]
+fn compiled_binary_accepts_no_path_and_updates_home_history() {
+    let root = unique_temp("no-path-execution");
+    let home = root.join("home");
+    fs::create_dir(&home).expect("create home directory");
+    let canonical_root = fs::canonicalize(&root).expect("canonicalize root directory");
+    let canonical_home = fs::canonicalize(&home).expect("canonicalize home directory");
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let mut env = HashMap::new();
+    env.insert(
+        "HOME".into(),
+        Value::test_string(home.to_str().expect("home is UTF-8")),
+    );
+    let harness = CompletionHarness {
+        plugin_config: None,
+        env,
+        cwd: root.to_str().expect("root is UTF-8").into(),
+        env_writes: writes.clone(),
+        forbid_engine_calls: false,
+    };
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nu_plugin_herdr_navigate_directory"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn plugin binary");
+    let mut stdin = child.stdin.take().expect("plugin stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("plugin stdout"));
+    let encoder = handshake(&mut stdin, &mut stdout);
+    encode(
+        &encoder,
+        &mut stdin,
+        &PluginInput::Call(
+            0,
+            PluginCall::Run(CallInfo {
+                name: "hnd".into(),
+                call: EvaluatedCall::new(Span::new(1, 4)),
+                input: PipelineDataHeader::Empty,
+            }),
+        ),
+    );
+    stdin.flush().expect("flush run call");
+
+    loop {
+        let message = encoder
+            .decode(&mut stdout)
+            .expect("decode plugin output")
+            .expect("plugin output");
+        match message {
+            PluginOutput::CallResponse(
+                0,
+                PluginCallResponse::PipelineData(PipelineDataHeader::Value(value, _)),
+            ) => {
+                assert!(value.is_nothing());
+                break;
+            }
+            PluginOutput::EngineCall { id, call, .. } => {
+                encode(
+                    &encoder,
+                    &mut stdin,
+                    &PluginInput::EngineCallResponse(id, respond_engine_call(call, &harness)),
+                );
+                stdin.flush().expect("flush engine response");
+            }
+            PluginOutput::Hello(_) | PluginOutput::Option(_) => {}
+            other => panic!("unexpected plugin output: {other:?}"),
+        }
+    }
+    assert_eq!(
+        *writes.lock().expect("environment writes"),
+        vec![
+            (
+                "OLDPWD".into(),
+                canonical_root.to_str().expect("root is UTF-8").into(),
+            ),
+            (
+                "PWD".into(),
+                canonical_home.to_str().expect("home is UTF-8").into(),
+            ),
+        ]
+    );
+
+    encode(&encoder, &mut stdin, &PluginInput::Goodbye);
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn compiled_binary_execution_reads_and_rejects_invalid_plugin_configuration() {
     let root = unique_temp("invalid-execution-config");
     let record_path = root.join("record");
@@ -190,6 +311,8 @@ fn compiled_binary_execution_reads_and_rejects_invalid_plugin_configuration() {
         plugin_config: Some(config),
         env,
         cwd: root.to_str().unwrap().to_string(),
+        env_writes: Arc::new(Mutex::new(Vec::new())),
+        forbid_engine_calls: false,
     };
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nu_plugin_herdr_navigate_directory"))
@@ -400,6 +523,8 @@ esac
         plugin_config: Some(config),
         env,
         cwd: root_utf8.to_string(),
+        env_writes: Arc::new(Mutex::new(Vec::new())),
+        forbid_engine_calls: false,
     })
     .expect("enabled completion must return items");
     assert!(
@@ -432,6 +557,8 @@ struct CompletionHarness {
     plugin_config: Option<Value>,
     env: HashMap<String, Value>,
     cwd: String,
+    env_writes: Arc<Mutex<Vec<(String, String)>>>,
+    forbid_engine_calls: bool,
 }
 
 fn request_completion(plugin_config: Option<Value>) -> Option<Vec<DynamicSuggestion>> {
@@ -439,10 +566,19 @@ fn request_completion(plugin_config: Option<Value>) -> Option<Vec<DynamicSuggest
         plugin_config,
         env: HashMap::new(),
         cwd: "/tmp".into(),
+        env_writes: Arc::new(Mutex::new(Vec::new())),
+        forbid_engine_calls: false,
     })
 }
 
 fn request_completion_with(harness: CompletionHarness) -> Option<Vec<DynamicSuggestion>> {
+    request_typed_completion_with(harness, Some(""))
+}
+
+fn request_typed_completion_with(
+    harness: CompletionHarness,
+    typed: Option<&str>,
+) -> Option<Vec<DynamicSuggestion>> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_nu_plugin_herdr_navigate_directory"))
         .arg("--stdio")
         .stdin(Stdio::piped())
@@ -456,12 +592,14 @@ fn request_completion_with(harness: CompletionHarness) -> Option<Vec<DynamicSugg
     let encoder = handshake(&mut stdin, &mut stdout);
 
     let mut call = Call::new(Span::test_data());
-    call.add_positional(Expression {
-        expr: Expr::Directory(String::new(), false),
-        span: Span::test_data(),
-        span_id: nu_protocol::SpanId::new(0),
-        ty: Type::String,
-    });
+    if let Some(typed) = typed {
+        call.add_positional(Expression {
+            expr: Expr::Directory(typed.to_string(), false),
+            span: Span::test_data(),
+            span_id: nu_protocol::SpanId::new(0),
+            ty: Type::String,
+        });
+    }
     encode(
         &encoder,
         &mut stdin,
@@ -544,6 +682,11 @@ fn respond_engine_call(
     call: EngineCall<PipelineDataHeader>,
     harness: &CompletionHarness,
 ) -> EngineCallResponse<PipelineDataHeader> {
+    assert!(
+        !harness.forbid_engine_calls,
+        "reserved dash completion must not call the engine: {}",
+        call.name()
+    );
     match call {
         EngineCall::GetPluginConfig => match &harness.plugin_config {
             Some(value) => {
@@ -562,6 +705,18 @@ fn respond_engine_call(
             Value::test_string(&harness.cwd),
             None,
         )),
+        EngineCall::AddEnvVar(name, value) => {
+            let rendered = match value {
+                Value::String { val, .. } => val,
+                other => format!("{other:?}"),
+            };
+            harness
+                .env_writes
+                .lock()
+                .expect("environment writes")
+                .push((name, rendered));
+            EngineCallResponse::PipelineData(PipelineDataHeader::Empty)
+        }
         other => panic!("unexpected engine call: {}", other.name()),
     }
 }
