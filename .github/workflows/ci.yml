@@ -1,6 +1,5 @@
-# Non-deploying Linux checks. macOS checks are temporarily disabled while the
-# repository is private and should be restored when it becomes public. Windows,
-# crates.io, Homebrew, and prebuilt-binary publishing are intentional non-goals.
+# Non-deploying Linux and macOS checks. Windows, crates.io, Homebrew, and
+# prebuilt-binary publishing are intentional non-goals.
 # Cargo commands use --locked so the tracked lockfile is the source of dependency
 # versions; the workflow does not cache the Cargo registry.
 name: CI
@@ -30,8 +29,7 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          # Restore when the repository becomes public.
-          # - macos-latest
+          - macos-latest
         rust: ["1.95.0", stable]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

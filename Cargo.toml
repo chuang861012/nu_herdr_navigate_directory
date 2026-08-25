@@ -1,8 +1,9 @@
 [package]
 name = "nu_plugin_herdr_navigate_directory"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95.0"
+publish = false
 license = "MIT"
 description = "Nushell plugin that provides hnd, a Herdr-aware directory navigation command"
 readme = "README.md"

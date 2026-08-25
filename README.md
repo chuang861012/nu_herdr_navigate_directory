@@ -28,11 +28,11 @@ ordinary directory change.
 ## Install
 
 ```text
-cargo install --git https://github.com/chuang861012/nu_herdr_navigate_directory nu_plugin_herdr_navigate_directory
+cargo install --git https://github.com/chuang861012/nu_herdr_navigate_directory --tag 0.2.0 nu_plugin_herdr_navigate_directory
 ```
 
-Add `--tag <version>` to install a source release instead of the default
-branch. The 0.1.1 tag still ships the previous `hcd` /
+Omit `--tag 0.2.0` to install the default branch instead of the 0.2.0 source
+release. The 0.1.1 tag still ships the previous `hcd` /
 `nu_plugin_herdr_cd` names.
 
 Register the installed binary in Nushell. `plugin add` looks in the current

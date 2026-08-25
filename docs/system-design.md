@@ -2,18 +2,17 @@
 
 Status: approved design baseline
 
-Last updated: 2026-08-25
+Last updated: 2026-08-26
 
-Released version: 0.1.1
+Released version: 0.2.0
 
-Implementation status: Phases 1–6 are complete. Version 0.1.1 is the current
-GitHub source release. Version 0.1.0 remains available as a prior source tag.
-The source tree includes the complete `hnd` command, configurable agent-pane
-reuse, an experimental opt-in dynamic completion path, local quality gates, a
-non-deploying GitHub Actions workflow that currently tests Linux and pauses
-macOS CI while the repository is private, and source-install documentation.
-Publishing to
-crates.io, Homebrew, or prebuilt binaries remains a separate future decision.
+Implementation status: Phases 1–6 are complete. Version 0.2.0 is the current
+GitHub source release. Versions 0.1.0 and 0.1.1 remain available as prior source
+tags. The source tree includes the complete `hnd` command, configurable
+agent-pane reuse, an experimental opt-in dynamic completion path, local quality
+gates, a non-deploying Linux/macOS GitHub Actions workflow, and source-install
+documentation. Publishing to crates.io, Homebrew, or prebuilt binaries remains
+a separate future decision.
 The completed 0.1.0 staged delivery record is archived in
 [Implementation Phases](archived/0.1.0/README.md). That archive is a historical
 record and must not be edited. This document remains the authoritative
@@ -79,7 +78,9 @@ The initial version does not provide:
 The crate uses Rust edition 2024 and a declared `rust-version`. As an
 application binary, it tracks `Cargo.lock`. Exact `nu-plugin` and
 `nu-protocol` versions are recorded in the package manifests; they must use
-the same minor version. The crate targets Nushell plugin SDK 0.115.
+the same minor version. The crate targets Nushell plugin SDK 0.115 and sets
+`publish = false` to preserve source-only distribution until registry
+publishing is approved explicitly.
 
 Nushell plugin transport uses `nu_plugin::serve_plugin` with
 `MsgPackSerializer`.
@@ -862,8 +863,7 @@ depend on a live terminal multiplexer session.
 The GitHub Actions workflow in `.github/workflows/ci.yml`:
 
 - builds and tests on Linux with `--locked`;
-- keeps the macOS matrix entry commented out while the repository is private
-  and restores it when the repository becomes public;
+- builds and tests on macOS with `--locked`;
 - runs `cargo fmt --check` on Linux;
 - runs `cargo clippy --locked --all-targets --all-features -- -D warnings` on
   Linux;
@@ -920,9 +920,9 @@ Implementation was divided into six independently reviewable phases:
 5. complete `hnd` orchestration and resilience;
 6. quality gates, CI, and source distribution readiness.
 
-After 0.1.1, experimental dynamic completion adds concurrent read-only Herdr
-inspection and `get_dynamic_completion`. Configurable idle agent statuses then
-parameterize pane eligibility without changing the decision-tree ordering or
+Version 0.2.0 adds concurrent read-only Herdr inspection and
+`get_dynamic_completion`, configurable idle agent statuses, and home and
+previous-directory navigation without changing the decision-tree ordering or
 shell-idle proof.
 
 Each phase had explicit prerequisites, work items, verification, a user

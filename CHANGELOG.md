@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-26
+
 ### Added
 
 - No-path and previous-directory navigation: `hnd` now uses the caller's home
@@ -48,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Install docs now register the plugin with the installed binary path. `plugin
-add` searches the current directory and `NU_PLUGIN_DIRS`, not `PATH`.
+  add` searches the current directory and `NU_PLUGIN_DIRS`, not `PATH`.
 
 ## [0.1.1] - 2026-08-23
 
@@ -70,6 +72,7 @@ add` searches the current directory and `NU_PLUGIN_DIRS`, not `PATH`.
   and returns nothing. Requires Nushell 0.115 and, inside a Herdr session,
   Herdr 0.8.2 or later.
 
-[Unreleased]: https://github.com/chuang861012/nu_herdr_navigate_directory/compare/0.1.1...HEAD
+[Unreleased]: https://github.com/chuang861012/nu_herdr_navigate_directory/compare/0.2.0...HEAD
+[0.2.0]: https://github.com/chuang861012/nu_herdr_navigate_directory/compare/0.1.1...0.2.0
 [0.1.1]: https://github.com/chuang861012/nu_herdr_navigate_directory/compare/0.1.0...0.1.1
 [0.1.0]: https://github.com/chuang861012/nu_herdr_navigate_directory/releases/tag/0.1.0
