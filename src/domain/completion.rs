@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use super::path::CanonicalPath;
-use super::types::{AgentStatus, Occupant, Session, TabId, WorkspaceId};
+use super::types::{AgentIdlePolicy, AgentStatus, Occupant, Session, TabId, WorkspaceId};
 
 /// Merged candidate set may not exceed this count after validation and dedup.
 pub(crate) const CANDIDATE_CEILING: usize = 1_000;
@@ -159,6 +159,7 @@ pub(crate) fn merge_candidates(
     semantic: impl IntoIterator<Item = (CanonicalPath, Evidence)>,
     filesystem: impl IntoIterator<Item = CanonicalPath>,
     caller_cwd: &CanonicalPath,
+    policy: &AgentIdlePolicy,
 ) -> Option<Vec<CompletionCandidate>> {
     let mut groups: Vec<(CanonicalPath, Vec<Evidence>)> = Vec::new();
     let mut group_indices = HashMap::new();
@@ -191,7 +192,7 @@ pub(crate) fn merge_candidates(
         groups
             .into_iter()
             .map(|(path, evidence)| CompletionCandidate {
-                description: describe(&evidence),
+                description: describe(&evidence, policy),
                 path,
             })
             .collect(),
@@ -265,14 +266,14 @@ fn insert_evidence(
     }
 }
 
-fn describe(evidence: &[Evidence]) -> DescriptionData {
+fn describe(evidence: &[Evidence], policy: &AgentIdlePolicy) -> DescriptionData {
     let pane_count = evidence
         .iter()
         .filter(|item| matches!(item, Evidence::Pane { .. }))
         .count();
     let Some(winner) = evidence
         .iter()
-        .min_by_key(|item| (strength(item), scope_rank(item)))
+        .min_by_key(|item| (strength(item, policy), scope_rank(item)))
     else {
         return DescriptionData {
             source: SourceLabel::Directory,
@@ -306,12 +307,12 @@ fn describe(evidence: &[Evidence]) -> DescriptionData {
     }
 }
 
-fn strength(evidence: &Evidence) -> u8 {
+fn strength(evidence: &Evidence, policy: &AgentIdlePolicy) -> u8 {
     match evidence {
         Evidence::Pane {
-            occupant: OccupantKind::Agent(AgentStatus::Idle | AgentStatus::Done),
+            occupant: OccupantKind::Agent(status),
             ..
-        } => 0,
+        } if policy.allows(*status) => 0,
         Evidence::WorkspaceRoot { .. } => 1,
         Evidence::Pane { .. } => 2,
         Evidence::Filesystem => 3,
@@ -414,16 +415,30 @@ mod tests {
 
     use super::{
         CANDIDATE_CEILING, CompletionCandidate, DescriptionData, Evidence, OccupantKind,
-        PrefixBound, ScopeLabel, SourceLabel, filesystem_path_allowed, merge_candidates,
-        semantic_path_allowed, session_evidence,
+        PrefixBound, ScopeLabel, SourceLabel, filesystem_path_allowed, semantic_path_allowed,
+        session_evidence,
     };
     use crate::domain::path::CanonicalPath;
     use crate::domain::types::{
-        AgentStatus, Occupant, Pane, PaneId, Session, Tab, TabId, Workspace, WorkspaceId,
+        AgentIdlePolicy, AgentStatus, Occupant, Pane, PaneId, Session, Tab, TabId, Workspace,
+        WorkspaceId,
     };
 
     fn cp(path: &str) -> CanonicalPath {
         CanonicalPath::from_parts_for_test(path)
+    }
+
+    fn merge_candidates(
+        semantic: impl IntoIterator<Item = (CanonicalPath, Evidence)>,
+        filesystem: impl IntoIterator<Item = CanonicalPath>,
+        caller_cwd: &CanonicalPath,
+    ) -> Option<Vec<CompletionCandidate>> {
+        super::merge_candidates(
+            semantic,
+            filesystem,
+            caller_cwd,
+            &AgentIdlePolicy::default(),
+        )
     }
 
     fn bound(base: &str, remaining: &str) -> PrefixBound {
@@ -804,6 +819,116 @@ mod tests {
             assert_eq!(description.source, source);
             assert_eq!(description.scope, ScopeLabel::CurrentWorkspace);
         }
+    }
+
+    #[test]
+    fn configured_statuses_change_strength_without_filtering_or_relabeling_paths() {
+        let cases = [
+            (AgentStatus::Idle, SourceLabel::AgentIdle),
+            (AgentStatus::Done, SourceLabel::AgentDone),
+            (AgentStatus::Blocked, SourceLabel::AgentBlocked),
+            (AgentStatus::Working, SourceLabel::AgentWorking),
+        ];
+        for (status, source) in cases {
+            let semantic = vec![
+                (
+                    cp("/repo"),
+                    Evidence::WorkspaceRoot {
+                        workspace_id: WorkspaceId::new("w1"),
+                        label: "repo".into(),
+                        number: 1,
+                        is_current: true,
+                    },
+                ),
+                (
+                    cp("/repo"),
+                    Evidence::Pane {
+                        workspace_id: WorkspaceId::new("w2"),
+                        tab_id: TabId::new("t2"),
+                        occupant: OccupantKind::Agent(status),
+                        label: "other".into(),
+                        number: 2,
+                        is_current_workspace: false,
+                        is_current_tab: false,
+                    },
+                ),
+            ];
+            let configured = AgentIdlePolicy::from_statuses([status]);
+            let winner = &super::merge_candidates(semantic.clone(), [], &cp("/cwd"), &configured)
+                .unwrap()[0]
+                .description;
+            assert_eq!(winner.source, source);
+            assert_eq!(
+                winner.scope,
+                ScopeLabel::Workspace {
+                    label: "other".into(),
+                    number: 2,
+                }
+            );
+
+            let unconfigured = AgentIdlePolicy::from_statuses([]);
+            let fallback = &super::merge_candidates(semantic, [], &cp("/cwd"), &unconfigured)
+                .unwrap()[0]
+                .description;
+            assert_eq!(fallback.source, SourceLabel::Workspace);
+        }
+
+        let pane_only = [(
+            cp("/blocked"),
+            Evidence::Pane {
+                workspace_id: WorkspaceId::new("w1"),
+                tab_id: TabId::new("t1"),
+                occupant: OccupantKind::Agent(AgentStatus::Blocked),
+                label: "repo".into(),
+                number: 1,
+                is_current_workspace: true,
+                is_current_tab: true,
+            },
+        )];
+        let candidates = super::merge_candidates(
+            pane_only,
+            [],
+            &cp("/cwd"),
+            &AgentIdlePolicy::from_statuses([]),
+        )
+        .unwrap();
+        assert_eq!(candidates[0].path, cp("/blocked"));
+        assert_eq!(candidates[0].description.source, SourceLabel::AgentBlocked);
+    }
+
+    #[test]
+    fn configured_statuses_are_equal_and_scope_breaks_ties() {
+        let semantic = [
+            (
+                cp("/repo"),
+                Evidence::Pane {
+                    workspace_id: WorkspaceId::new("w2"),
+                    tab_id: TabId::new("t2"),
+                    occupant: OccupantKind::Agent(AgentStatus::Blocked),
+                    label: "other".into(),
+                    number: 2,
+                    is_current_workspace: false,
+                    is_current_tab: false,
+                },
+            ),
+            (
+                cp("/repo"),
+                Evidence::Pane {
+                    workspace_id: WorkspaceId::new("w1"),
+                    tab_id: TabId::new("t1"),
+                    occupant: OccupantKind::Agent(AgentStatus::Working),
+                    label: "repo".into(),
+                    number: 1,
+                    is_current_workspace: true,
+                    is_current_tab: true,
+                },
+            ),
+        ];
+        let policy = AgentIdlePolicy::from_statuses([AgentStatus::Blocked, AgentStatus::Working]);
+        let description =
+            &super::merge_candidates(semantic, [], &cp("/cwd"), &policy).unwrap()[0].description;
+        assert_eq!(description.source, SourceLabel::AgentWorking);
+        assert_eq!(description.scope, ScopeLabel::CurrentTab);
     }
 
     #[test]

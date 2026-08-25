@@ -1,19 +1,26 @@
 //! Deterministic inside-Herdr navigation decision tree.
 
 use super::path::CanonicalPath;
-use super::types::{Action, Caller, Pane, Session, Tab, TabId, Workspace, WorkspaceId};
+use super::types::{
+    Action, AgentIdlePolicy, Caller, Pane, Session, Tab, TabId, Workspace, WorkspaceId,
+};
 
 /// Choose the next navigation action from already-canonical paths and typed evidence.
 ///
 /// The function is free of I/O, environment reads, clocks, process execution, and
 /// global state. Recheck-before-create belongs to command orchestration.
-pub(crate) fn decide(caller: &Caller, session: &Session, target: &CanonicalPath) -> Action {
+pub(crate) fn decide(
+    caller: &Caller,
+    session: &Session,
+    target: &CanonicalPath,
+    policy: &AgentIdlePolicy,
+) -> Action {
     if &caller.cwd == target {
         return Action::NoOp;
     }
 
     if let Some(workspace) = find_workspace(session, &caller.workspace_id)
-        && let Some(pane) = select_eligible_pane(workspace, target, Some(&caller.tab_id))
+        && let Some(pane) = select_eligible_pane(workspace, target, Some(&caller.tab_id), policy)
     {
         return Action::FocusPane {
             pane_id: pane.id.clone(),
@@ -28,7 +35,7 @@ pub(crate) fn decide(caller: &Caller, session: &Session, target: &CanonicalPath)
 
     match nearest_containing_workspace(session, &caller.workspace_id, target) {
         Some(workspace) => {
-            if let Some(pane) = select_eligible_pane(workspace, target, None) {
+            if let Some(pane) = select_eligible_pane(workspace, target, None, policy) {
                 Action::FocusPane {
                     pane_id: pane.id.clone(),
                 }
@@ -84,6 +91,7 @@ fn select_eligible_pane<'a>(
     workspace: &'a Workspace,
     target: &CanonicalPath,
     caller_tab_id: Option<&TabId>,
+    policy: &AgentIdlePolicy,
 ) -> Option<&'a Pane> {
     workspace
         .tabs
@@ -94,7 +102,7 @@ fn select_eligible_pane<'a>(
                 .iter()
                 .enumerate()
                 .filter_map(move |(pane_index, pane)| {
-                    pane.is_eligible_at(target).then_some((
+                    pane.is_eligible_at(target, policy).then_some((
                         pane_rank(workspace, tab, tab_index, pane, pane_index, caller_tab_id),
                         pane,
                     ))
@@ -129,15 +137,19 @@ fn pane_rank(
 
 #[cfg(test)]
 mod tests {
-    use super::decide;
+    use super::decide as decide_with_policy;
     use crate::domain::path::CanonicalPath;
     use crate::domain::types::{
-        Action, AgentStatus, Caller, ForegroundProcess, Occupant, Pane, PaneId, Session,
-        ShellProcessEvidence, Tab, TabId, Workspace, WorkspaceId,
+        Action, AgentIdlePolicy, AgentStatus, Caller, ForegroundProcess, Occupant, Pane, PaneId,
+        Session, ShellProcessEvidence, Tab, TabId, Workspace, WorkspaceId,
     };
 
     fn cp(path: &str) -> CanonicalPath {
         CanonicalPath::from_parts_for_test(path)
+    }
+
+    fn decide(caller: &Caller, session: &Session, target: &CanonicalPath) -> Action {
+        decide_with_policy(caller, session, target, &AgentIdlePolicy::default())
     }
 
     fn caller(cwd: &str, workspace: &str, tab: &str, pane: &str) -> Caller {
@@ -992,5 +1004,118 @@ mod tests {
             "hnd .. must not change the current pane directory, got {action:?}"
         );
         assert_eq!(action, create_tab("ws-a", "/repo"));
+    }
+
+    #[test]
+    fn agent_policy_controls_only_agent_eligibility() {
+        let caller_view = caller("/repo", "ws-a", "tab-a", "pane-a");
+        let session_with = |occupant| {
+            session(
+                Some("ws-a"),
+                vec![workspace(
+                    "ws-a",
+                    Some("/repo"),
+                    Some("tab-a"),
+                    vec![tab(
+                        "tab-a",
+                        Some("pane-target"),
+                        vec![pane("pane-target", Some("/repo/src"), occupant)],
+                    )],
+                )],
+            )
+        };
+        let cases = [
+            (
+                "default idle",
+                idle_agent(),
+                AgentIdlePolicy::default(),
+                focus("pane-target"),
+            ),
+            (
+                "default done",
+                done_agent(),
+                AgentIdlePolicy::default(),
+                focus("pane-target"),
+            ),
+            (
+                "done removed",
+                done_agent(),
+                AgentIdlePolicy::from_statuses([AgentStatus::Idle]),
+                cd("/repo/src"),
+            ),
+            (
+                "configured blocked",
+                blocked_agent(),
+                AgentIdlePolicy::from_statuses([AgentStatus::Blocked]),
+                focus("pane-target"),
+            ),
+            (
+                "configured working",
+                working_agent(),
+                AgentIdlePolicy::from_statuses([AgentStatus::Working]),
+                focus("pane-target"),
+            ),
+            (
+                "unknown remains ineligible",
+                unknown_agent(),
+                AgentIdlePolicy::from_statuses([AgentStatus::Unknown]),
+                cd("/repo/src"),
+            ),
+            (
+                "empty agent policy preserves idle shell",
+                idle_shell(),
+                AgentIdlePolicy::from_statuses([]),
+                focus("pane-target"),
+            ),
+        ];
+        for (name, occupant, policy, expected) in cases {
+            assert_eq!(
+                decide_with_policy(
+                    &caller_view,
+                    &session_with(occupant),
+                    &cp("/repo/src"),
+                    &policy,
+                ),
+                expected,
+                "{name}"
+            );
+        }
+
+        let equal_weight = session(
+            Some("ws-a"),
+            vec![workspace(
+                "ws-a",
+                Some("/repo"),
+                Some("tab-a"),
+                vec![tab(
+                    "tab-a",
+                    Some("shell"),
+                    vec![
+                        pane("blocked", Some("/repo/src"), blocked_agent()),
+                        pane("shell", Some("/repo/src"), idle_shell()),
+                    ],
+                )],
+            )],
+        );
+        assert_eq!(
+            decide_with_policy(
+                &caller_view,
+                &equal_weight,
+                &cp("/repo/src"),
+                &AgentIdlePolicy::from_statuses([AgentStatus::Blocked]),
+            ),
+            focus("shell"),
+            "focused-pane ranking must outrank occupant type"
+        );
+
+        assert_eq!(
+            decide_with_policy(
+                &caller("/repo/src", "ws-a", "tab-a", "pane-a"),
+                &session_with(working_agent()),
+                &cp("/repo/src"),
+                &AgentIdlePolicy::from_statuses([]),
+            ),
+            Action::NoOp
+        );
     }
 }

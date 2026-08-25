@@ -2,15 +2,16 @@
 
 Status: approved design baseline
 
-Last updated: 2026-08-23
+Last updated: 2026-08-25
 
 Released version: 0.1.1
 
 Implementation status: Phases 1–6 are complete. Version 0.1.1 is the current
 GitHub source release. Version 0.1.0 remains available as a prior source tag.
-The source tree includes the complete `hnd` command, an experimental opt-in
-dynamic completion path, local quality gates, a non-deploying Linux/macOS
-GitHub Actions workflow, and source-install documentation. Publishing to
+The source tree includes the complete `hnd` command, configurable agent-pane
+reuse, an experimental opt-in dynamic completion path, local quality gates, a
+non-deploying Linux/macOS GitHub Actions workflow, and source-install
+documentation. Publishing to
 crates.io, Homebrew, or prebuilt binaries remains a separate future decision.
 The completed 0.1.0 staged delivery record is archived in
 [Implementation Phases](archived/0.1.0/README.md). That archive is a historical
@@ -38,6 +39,8 @@ repositories, create directories, or manage Herdr named sessions.
 - Choose the nearest containing workspace deterministically.
 - Fail safely when Herdr state cannot be inspected or changed with confidence.
 - Keep the decision logic pure and independently testable.
+- Let users configure which known agent statuses make a pane reusable while
+  preserving fail-closed shell-idle proof.
 - Offer an experimental, disabled-by-default dynamic completion path that can
   enrich directory candidates from live Herdr workspace and pane state without
   changing `hnd` execution.
@@ -48,7 +51,7 @@ The initial version does not provide:
 
 - cross-session Herdr navigation;
 - Windows support;
-- execution configuration options or command flags;
+- command flags or per-session, workspace, tab, or agent-type policy overrides;
 - plugin-controlled completion ranking, caching, or fuzzy search;
 - shell idle detection during completion;
 - fuzzy matching, bookmarks, history, or zoxide-style ranking;
@@ -124,7 +127,44 @@ The command has no flags and accepts no pipeline input in the initial version.
 The directory shape matches the command's directory-only contract and gives
 disabled or fallback completion the native Nushell directory completer.
 
-### 6.1 Experimental dynamic completion
+### 6.1 Plugin configuration
+
+The stable plugin configuration schema is:
+
+```nu
+$env.config.plugins.herdr_navigate_directory = {
+  dynamic_completion: true
+  idle_agent_statuses: [idle done]
+}
+```
+
+A missing plugin configuration or missing `idle_agent_statuses` key uses the
+backward-compatible default set `{idle, done}`. The accepted entries are the
+exact lowercase strings `idle`, `done`, `blocked`, and `working`. The list has
+set semantics: duplicates and input order have no effect. An empty list is
+valid and disables agent-pane reuse while leaving proven-idle shell reuse
+enabled. `unknown` and every other spelling, type, case, or whitespace variant
+are invalid; `unknown` is never eligible internally.
+
+A present configuration must be a record containing only
+`dynamic_completion` and `idle_agent_statuses`. A non-record, unknown key,
+non-list status value, non-string member, unsupported member, or config-read
+failure is `invalid_configuration` during inside-Herdr execution. For
+compatibility, only boolean `true` enables `dynamic_completion`; every other
+value disables it without invalidating the record.
+
+Strict record and unknown-key validation are an intentional compatibility
+break: previously ignored plugin configuration can now prevent inside-Herdr
+execution. The schema is otherwise stable and is not experimentally gated.
+
+Outside Herdr, `hnd` neither reads nor validates plugin configuration. Inside
+Herdr, it resolves and validates the path and complete injected Herdr context
+first, then reads configuration exactly once under the 10-second command
+deadline. The resulting immutable `AgentIdlePolicy` is shared by the initial
+decision and the one permitted recomputation. Invalid configuration prevents
+all Herdr CLI/socket operations, resource actions, and `$env.PWD` mutation.
+
+### 6.2 Experimental dynamic completion
 
 Dynamic completion is experimental and disabled by default. Users enable it
 through Nushell's plugin-specific configuration:
@@ -132,13 +172,14 @@ through Nushell's plugin-specific configuration:
 ```nu
 $env.config.plugins.herdr_navigate_directory = {
   dynamic_completion: true
+  idle_agent_statuses: [idle done]
 }
 ```
 
-A missing plugin config, a missing `dynamic_completion` key, any value other
-than the boolean `true`, or a config-read failure disables the feature and
-returns `None` so native directory completion can run. The setting changes
-completion only. It never changes `hnd` execution.
+A missing `dynamic_completion` key or any value other than boolean `true`
+disables the feature and returns `None` so native directory completion can
+run. Invalid or unreadable configuration also returns `None`. The completion
+flag changes completion only; `idle_agent_statuses` is stable execution policy.
 
 When enabled inside Herdr, completion may merge:
 
@@ -177,6 +218,13 @@ rank or sort candidates. Nushell 0.115 may cache plugin dynamic completion
 results; the plugin itself implements no cache. Users should put the opt-in
 in `config.nu` and start a new session. Documentation must not require
 disabling the global completion cache.
+
+Completion collects every valid pane `foreground_cwd` regardless of policy.
+When duplicate physical paths are merged, a pane whose agent status is in the
+parsed policy has reusable-source strength equal to every other configured
+status. Existing scope and evidence ordering break ties. Descriptions retain
+the observed status, such as `agent blocked`; configuration never relabels it
+as idle.
 
 Completion is strictly read-only. The only permitted Herdr commands are
 `herdr api snapshot` and `herdr pane current --current`, run concurrently
@@ -282,12 +330,13 @@ Incomplete process information means "not idle," not "probably idle."
 
 ### 9.2 Idle agent pane
 
-An idle agent pane has a detected agent and an `agent_status` of exactly
-`idle` or `done`. The states `working`, `blocked`, and `unknown` are never
-eligible.
+An idle agent pane has a detected agent and an `agent_status` contained in the
+invocation's immutable `AgentIdlePolicy`. The default contains `idle` and
+`done`; users may select any subset of `idle`, `done`, `blocked`, and `working`.
+`unknown` is unconditionally ineligible.
 
-Shell-idle, agent-idle, and agent-done panes have equal selection weight. The
-occupant type does not introduce a hidden preference.
+Proven-idle shells and all policy-eligible agent states have equal selection
+weight. Status and occupant type do not introduce a hidden preference.
 
 ### 9.3 Inspection failures
 
@@ -351,9 +400,11 @@ flowchart TD
     B --> C{HERDR_ENV present?}
     C -->|No| D[Set caller PWD to canonical target]
     C -->|Yes, not exactly 1| E2[Return invalid Herdr context]
-    C -->|Exactly 1| F[Validate Herdr context, binary, socket, version, and protocol]
+    C -->|Exactly 1| F[Validate complete Herdr context and injected binary]
     F -->|Invalid| E3[Return Herdr error; no fallback]
-    F --> G[Resolve live caller and read session snapshot]
+    F --> Q[Read and validate plugin configuration once]
+    Q -->|Invalid| E4[Return invalid configuration; no action]
+    Q --> G[Resolve live caller and read session snapshot; validate compatibility]
     G --> H{Target equals caller cwd?}
     H -->|Yes| N[NoOp]
     H -->|No| I{Idle exact-path pane in caller workspace?}
@@ -376,6 +427,7 @@ if HERDR_ENV is absent:
     ChangeDirectory(target)
 
 validate complete Herdr context
+read and validate plugin configuration once
 resolve the live caller
 read and validate one session snapshot
 
@@ -400,8 +452,10 @@ else:
     CreateWorkspace(target, focus = true)
 ```
 
-Busy exact-path panes are treated as unavailable. They do not block directory
-change or creation of a separate tab/workspace.
+Exact-path panes without eligible evidence are treated as unavailable. They do
+not block directory change or creation of a separate tab/workspace. Selecting
+`blocked` or `working` intentionally makes panes in that state reusable;
+focusing one remains a silent successful action.
 
 ## 12. Domain actions
 
@@ -438,7 +492,8 @@ The implementation is synchronous and stateless, with three narrow layers.
 
 - typed session, workspace, tab, and pane views;
 - path containment and workspace-depth comparison;
-- idle eligibility from already collected evidence;
+- immutable typed `AgentIdlePolicy` and idle eligibility from already
+  collected evidence;
 - deterministic candidate ranking;
 - the pure decision function that produces an `Action`;
 - pure completion evidence, canonical candidate identity, prefix and hidden
@@ -459,11 +514,11 @@ The implementation is synchronous and stateless, with three narrow layers.
 
 - Nushell signature and argument decoding;
 - caller cwd and environment reads through `EngineInterface`;
-- path resolution and error spans;
+- path resolution, strict plugin-configuration parsing, and error spans;
 - orchestration of inspect, decide, recheck, and act;
 - caller `$env.PWD` update;
 - conversion to Nushell `LabeledError` and `nothing`;
-- experimental plugin-config decoding and `get_dynamic_completion` for
+- shared typed configuration and `get_dynamic_completion` for
   positional argument zero, including lexical prefix reconstruction, direct
   filesystem enumeration, and silent fallback.
 
@@ -565,20 +620,21 @@ or workspace focus.
 | --- | ---: |
 | Snapshot, caller lookup, pane inspection, focus | 2 seconds each |
 | Tab or workspace creation | 5 seconds each |
-| Entire `hnd` invocation | 10 seconds total |
+| Entire `hnd` invocation, including plugin-config lookup | 10 seconds total |
 | Completion Herdr enrichment, including config/context reads, binary validation, snapshot, live caller, path validation, and semantic construction | 200 milliseconds shared |
 | Entire merged completion request | 250 milliseconds |
 
 The total deadline starts at command entry and is a hard maximum covering path
-resolution, Herdr context and binary validation, Herdr I/O, and the one
-allowed recomputation. Blocking read-only caller-engine or filesystem lookups
-are waited on a helper thread so the command can return at the deadline or on
-interruption without waiting for the syscall to finish. Caller mutations such
-as `$env.PWD` are not dispatched on an abandonable helper: they run only after
-a halt check and are waited to completion, so a timed-out or interrupted
-invocation cannot change the caller's cwd later. If that mutation itself
-blocks, the invocation may exceed the total deadline in order to stay
-fail-closed. A child process that exceeds its limit is terminated and reaped.
+resolution, Herdr context and binary validation, plugin-config lookup, Herdr
+I/O, and the one allowed recomputation. Blocking read-only caller-engine or
+filesystem lookups are waited on a helper thread so the command can return at
+the deadline or on interruption without waiting for the syscall to finish.
+Caller mutations such as `$env.PWD` are not dispatched on an abandonable
+helper: they run only after a halt check and are waited to completion, so a
+timed-out or interrupted invocation cannot change the caller's cwd later. If
+that mutation itself blocks, the invocation may exceed the total deadline in
+order to stay fail-closed. A child process that exceeds its limit is terminated
+and reaped.
 A socket operation that exceeds its limit is closed.
 
 The command observes `EngineInterface::signals()`. On interruption it
@@ -618,6 +674,7 @@ Internal failures use these categories before conversion to Nushell
 | `invalid_path` | The input cannot resolve to a supported, enterable directory. |
 | `unsupported_platform` | The host is outside the Linux/macOS support set. |
 | `invalid_herdr_context` | Herdr markers are malformed or incomplete. |
+| `invalid_configuration` | Plugin configuration is unreadable or violates the strict schema. |
 | `incompatible_herdr` | Version or required capability is unsupported. |
 | `herdr_timeout` | A per-operation or total deadline expired. |
 | `herdr_transport` | Process or socket communication failed. |
@@ -626,8 +683,10 @@ Internal failures use these categories before conversion to Nushell
 
 These names are internal and are not a stable machine-readable public API.
 
-Path errors label the path argument span. Context and Herdr errors label the
-command head span. Errors may include the operation, sanitized Herdr error
+Path errors label the path argument span. Malformed configuration values label
+the most specific available value span, unknown keys label the record span,
+and config-read failures label the command head. Context and Herdr errors also
+label the command head. Errors may include the operation, sanitized Herdr error
 code/message, target path, relevant resource ID, and local Herdr socket path.
 The socket path is not treated as a secret. Errors do not dump an environment,
 complete stdout/stderr, or a session snapshot. Untrusted error text is
@@ -636,6 +695,8 @@ length-limited and stripped of control characters.
 Inside Herdr, any context, query, protocol, focus, or create failure is an
 error. It never silently falls back to ordinary directory change. Outside
 Herdr is the only mode that unconditionally uses ordinary directory change.
+Error precedence is unsupported platform, path, complete Herdr context,
+configuration, then Herdr inspection and actions.
 
 ## 18. Security properties
 
@@ -649,6 +710,9 @@ Herdr is the only mode that unconditionally uses ordinary directory change.
 - JSON inputs and outputs are typed and size-bounded.
 - Unknown response fields are tolerated, but missing or malformed required
   fields fail closed.
+- Invalid configuration fails before any Herdr call, socket connection,
+  resource action, or caller-environment mutation. `unknown` agent evidence
+  remains ineligible regardless of internal policy construction.
 - The plugin never deletes, closes, moves, or overwrites an existing Herdr
   resource.
 - The plugin never writes files or persistent state during `hnd` execution
@@ -674,8 +738,10 @@ The domain layer covers at least:
 - equal-depth workspace tie-breaking;
 - exclusion of a non-containing workspace even when one of its panes has the
   exact target cwd;
-- shell-idle and agent `idle`/`done` eligibility;
-- rejection of busy, blocked, working, unknown, and unprovable panes;
+- shell-idle proof and default agent `idle`/`done` eligibility;
+- configurable `blocked`/`working` eligibility, empty policy behavior, equal
+  status weighting, and unconditional rejection of `unknown`;
+- rejection of busy and unprovable shell panes;
 - focused-tab/pane and stable-list ordering;
 - busy exact-path panes leading to directory change or resource creation;
 - invalid workspace and pane paths;
@@ -713,20 +779,24 @@ Focused tests verify:
 - canonical `$env.PWD` mutation only for `ChangeDirectory`;
 - `nothing` on success;
 - correct `LabeledError` spans and categories;
+- strict config schema, defaults, read-once lifecycle, error precedence,
+  deadline/interruption behavior, and absence of side effects on failure;
 - experimental dynamic-completion opt-in, native fallback, lexical
   reconstruction, and suggestion rendering.
 
 ### 19.5 Dynamic completion tests
 
 Pure table tests cover evidence aggregation, canonical deduplication,
-provenance coupling, prefix and hidden-path rules, and caller-cwd exclusion.
+policy-dependent source strength, truthful status labels, provenance coupling,
+prefix and hidden-path rules, and caller-cwd exclusion.
 Fake CLI tests cover concurrent snapshot and live-caller reads, the shared
 200 ms deadline, stale-state fallback without recomputation, and proof that
 completion never calls `process-info` or mutation commands. The compiled
 plugin protocol test verifies the directory signature, that disabled
 dynamic completion returns native fallback, and that enabled completion
 returns structured directory suggestions through the SDK completion call
-path.
+path. A compiled execution call verifies that real plugin configuration reaches
+the command boundary.
 
 ### 19.6 Optional end-to-end validation
 
@@ -795,9 +865,10 @@ Implementation was divided into six independently reviewable phases:
 5. complete `hnd` orchestration and resilience;
 6. quality gates, CI, and source distribution readiness.
 
-After 0.1.1, experimental dynamic completion adds plugin-config decoding,
-concurrent read-only Herdr inspection, and `get_dynamic_completion` without
-changing the approved navigation decision tree.
+After 0.1.1, experimental dynamic completion adds concurrent read-only Herdr
+inspection and `get_dynamic_completion`. Configurable idle agent statuses then
+parameterize pane eligibility without changing the decision-tree ordering or
+shell-idle proof.
 
 Each phase had explicit prerequisites, work items, verification, a user
 confirmation gate, and out-of-scope boundaries. The completed 0.1.0 phase

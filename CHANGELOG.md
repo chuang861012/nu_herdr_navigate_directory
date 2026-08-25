@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Stable `idle_agent_statuses` plugin configuration for choosing which exact
+  agent states make a pane reusable. It accepts `idle`, `done`, `blocked`, and
+  `working`, defaults to `[idle done]`, and accepts an empty list to disable
+  agent-pane reuse without disabling proven-idle shell reuse.
 - Experimental, disabled-by-default dynamic completion for `hnd`. Enable it
   with `$env.config.plugins.herdr_navigate_directory.dynamic_completion = true`.
   Inside Herdr it can enrich directory candidates from live workspace and pane
@@ -19,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** inside Herdr, a present plugin configuration must now be a
+  record containing only `dynamic_completion` and `idle_agent_statuses`.
+  Non-record values, unknown keys, invalid status lists, and unreadable plugin
+  configuration now return `invalid_configuration` before any Herdr action.
 - The `hnd` path argument is now a directory rather than a generic filepath,
   so native completion and the public signature match the directory-only
   contract. Accepted path forms are unchanged.
