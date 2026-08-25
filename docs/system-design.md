@@ -10,8 +10,9 @@ Implementation status: Phases 1–6 are complete. Version 0.1.1 is the current
 GitHub source release. Version 0.1.0 remains available as a prior source tag.
 The source tree includes the complete `hnd` command, configurable agent-pane
 reuse, an experimental opt-in dynamic completion path, local quality gates, a
-non-deploying Linux/macOS GitHub Actions workflow, and source-install
-documentation. Publishing to
+non-deploying GitHub Actions workflow that currently tests Linux and pauses
+macOS CI while the repository is private, and source-install documentation.
+Publishing to
 crates.io, Homebrew, or prebuilt binaries remains a separate future decision.
 The completed 0.1.0 staged delivery record is archived in
 [Implementation Phases](archived/0.1.0/README.md). That archive is a historical
@@ -808,7 +809,9 @@ depend on a live terminal multiplexer session.
 
 The GitHub Actions workflow in `.github/workflows/ci.yml`:
 
-- builds and tests on Linux and macOS with `--locked`;
+- builds and tests on Linux with `--locked`;
+- keeps the macOS matrix entry commented out while the repository is private
+  and restores it when the repository becomes public;
 - runs `cargo fmt --check` on Linux;
 - runs `cargo clippy --locked --all-targets --all-features -- -D warnings` on
   Linux;
