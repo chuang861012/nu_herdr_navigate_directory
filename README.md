@@ -216,6 +216,16 @@ completion.
 > plugin does not implement its own cache and does not require disabling
 > Nushell's global completion cache. This caching caveat applies to completion
 > only; `hnd` execution reads current configuration on every invocation.
+>
+> If fresh completion results are more important than cache performance, you
+> can disable Nushell's completion cache in `config.nu`:
+>
+> ```nu
+> $env.config.completions.cache_size = 0
+> ```
+>
+> This is optional and affects every Nushell completion, not only `hnd`. It may
+> increase completion latency, so evaluate the tradeoff for your workflow.
 
 ## Development
 
