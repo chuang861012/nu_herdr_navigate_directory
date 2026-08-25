@@ -5,7 +5,7 @@
 > plugin.
 
 Herdr-aware directory navigation for Nushell.
-Reuse an idle tab whenever possible when changing directories to avoid ending up with tons of tabs.
+Inside Herdr, it reuses idle panes when possible to avoid creating unnecessary tabs.
 
 ```nu
 hnd [path: directory] -> nothing
