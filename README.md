@@ -5,18 +5,13 @@
 > plugin.
 
 Herdr-aware directory navigation for Nushell.
+Reuse an idle tab whenever possible when changing directories to avoid ending up with tons of tabs.
 
 ```nu
 hnd [path: directory] -> nothing
 ```
 
-Run `hnd` with no path for home, use `hnd -` for the previous directory, or
-point it at another directory. It picks the least disruptive move: stay in
-this pane when you go deeper, jump to an idle pane already there, or open a new
-tab or workspace. Success is silent.
-
-See [the system design](docs/system-design.md) for architecture, constraints,
-and verification. Notable changes are in the [changelog](CHANGELOG.md).
+Notable changes are in the [changelog](CHANGELOG.md).
 
 ## Prerequisites
 
@@ -60,23 +55,23 @@ registry.
 
 `hnd` intentionally supports a smaller set of path forms than Nushell's `cd`:
 
-| Path form | Example | Supported | Notes |
-| --------- | ------- | --------- | ----- |
-| Relative path | `hnd src` | ✅ | Resolved against the caller's current directory |
-| Parent or current directory | `hnd ..`, `hnd .` | ✅ | `.` and `..` are resolved before navigation |
-| Absolute path | `hnd /repo/src` | ✅ | Must point to an existing, enterable directory |
-| Home directory | `hnd ~` | ✅ | Requires the caller's home directory to be available |
-| Home-relative path | `hnd ~/src` | ✅ | Only a leading `~/` is expanded |
-| Path containing spaces | `hnd "my dir"` | ✅ | Quote the path using normal Nushell syntax |
-| Symbolic-link path | `hnd linked-dir` | ✅ | Resolved to its canonical physical directory |
-| No path | `hnd` | ✅ | Uses the caller's `HOME`; it must be a non-empty absolute path |
-| Previous directory | `hnd -` | ✅ | Uses absolute caller `OLDPWD`, or the current directory when `OLDPWD` is absent |
-| Literal directory named `-` | `hnd ./-` | ✅ | A bare `-` is reserved; `./-` and absolute paths remain literal paths |
-| Named-user home | `hnd ~otheruser` | ❌ | `~otheruser` expansion is not implemented |
-| Glob | `hnd */src` | ❌ | Glob expansion is not implemented |
-| Multiple paths | `hnd src tests` | ❌ | At most one path is accepted |
-| Flags | `hnd --some-flag src` | ❌ | The command has no flags |
-| Pipeline input | <code>'/repo' &#124; hnd</code> | ❌ | Pipeline input is not accepted |
+| Path form                   | Example                         | Supported | Notes                                                                           |
+| --------------------------- | ------------------------------- | --------- | ------------------------------------------------------------------------------- |
+| Relative path               | `hnd src`                       | ✅        | Resolved against the caller's current directory                                 |
+| Parent or current directory | `hnd ..`, `hnd .`               | ✅        | `.` and `..` are resolved before navigation                                     |
+| Absolute path               | `hnd /repo/src`                 | ✅        | Must point to an existing, enterable directory                                  |
+| Home directory              | `hnd ~`                         | ✅        | Requires the caller's home directory to be available                            |
+| Home-relative path          | `hnd ~/src`                     | ✅        | Only a leading `~/` is expanded                                                 |
+| Path containing spaces      | `hnd "my dir"`                  | ✅        | Quote the path using normal Nushell syntax                                      |
+| Symbolic-link path          | `hnd linked-dir`                | ✅        | Resolved to its canonical physical directory                                    |
+| No path                     | `hnd`                           | ✅        | Uses the caller's `HOME`; it must be a non-empty absolute path                  |
+| Previous directory          | `hnd -`                         | ✅        | Uses absolute caller `OLDPWD`, or the current directory when `OLDPWD` is absent |
+| Literal directory named `-` | `hnd ./-`                       | ✅        | A bare `-` is reserved; `./-` and absolute paths remain literal paths           |
+| Named-user home             | `hnd ~otheruser`                | ❌        | `~otheruser` expansion is not implemented                                       |
+| Glob                        | `hnd */src`                     | ❌        | Glob expansion is not implemented                                               |
+| Multiple paths              | `hnd src tests`                 | ❌        | At most one path is accepted                                                    |
+| Flags                       | `hnd --some-flag src`           | ❌        | The command has no flags                                                        |
+| Pipeline input              | <code>'/repo' &#124; hnd</code> | ❌        | Pipeline input is not accepted                                                  |
 
 ## How `hnd` decides
 
@@ -155,10 +150,10 @@ may already have changed; it does not attempt an unsafe rollback.
 A pane is reused only when its foreground directory is the exact target and it
 meets one of these idle conditions:
 
-| Pane type | Treated as idle | Not treated as idle |
-| --------- | --------------- | ------------------- |
-| Shell | No agent is detected and process info proves the interactive shell itself is in the foreground | Process info is incomplete or another foreground process is active |
-| Agent | Its status is selected by `idle_agent_statuses`; the default is `idle` or `done` | Its status is not selected, or is `unknown` |
+| Pane type | Treated as idle                                                                                | Not treated as idle                                                |
+| --------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Shell     | No agent is detected and process info proves the interactive shell itself is in the foreground | Process info is incomplete or another foreground process is active |
+| Agent     | Its status is selected by `idle_agent_statuses`; the default is `idle` or `done`               | Its status is not selected, or is `unknown`                        |
 
 When several idle panes match, `hnd` prefers the caller's tab, then the
 workspace's focused tab, then snapshot list order. Every selected agent status
