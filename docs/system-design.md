@@ -32,7 +32,7 @@ repositories, create directories, or manage Herdr named sessions.
 
 ## 2. Goals
 
-- Provide `hnd <path>` as a predictable directory-navigation command for
+- Provide `hnd [path]` as a predictable directory-navigation command for
   Nushell.
 - Reuse an idle pane at the exact target directory when the pane belongs to
   the relevant Herdr workspace.
@@ -55,9 +55,8 @@ The initial version does not provide:
 - command flags or per-session, workspace, tab, or agent-type policy overrides;
 - plugin-controlled completion ranking, caching, or fuzzy search;
 - shell idle detection during completion;
-- fuzzy matching, bookmarks, history, or zoxide-style ranking;
-- `hnd` with no argument, `cd -`, globs, multiple paths, flags, or pipeline
-  input;
+- fuzzy matching, bookmarks, persistent history, or zoxide-style ranking;
+- globs, multiple paths, flags, or pipeline input;
 - `~otheruser` expansion;
 - non-UTF-8 path support;
 - directory creation;
@@ -117,12 +116,29 @@ an unexpected result kind, or a mismatched resource ID are protocol errors.
 The signature is conceptually:
 
 ```nu
-hnd <path: directory> -> nothing
+hnd [path: directory] -> nothing
 ```
 
-`path` is one required `SyntaxShape::Directory` positional argument. The command
-accepts relative paths, absolute paths, `~`, `~/...`, and paths containing
-spaces. Successful calls are silent and return Nushell `nothing`.
+`path` is one optional `SyntaxShape::Directory` positional argument. The
+command accepts relative paths, absolute paths, `~`, `~/...`, paths containing
+spaces, and the reserved bare `-` previous-directory sentinel. Omitting `path`
+selects the caller's home directory. Successful calls are silent and return
+Nushell `nothing`.
+
+The omitted and previous-directory forms are:
+
+- `hnd` reads the caller's `HOME` and requires a non-empty absolute string;
+- `hnd -` reads the caller's `OLDPWD` and requires a non-empty absolute string
+  when present;
+- when `OLDPWD` is absent, `hnd -` selects the canonical caller cwd, matching
+  Nushell 0.115's effective `cd -` fallback;
+- a bare `-` is reserved, while `./-` and absolute paths ending in `/-` remain
+  literal directory paths.
+
+`HOME` and `OLDPWD` always come from the calling Nushell scope, never the
+plugin process. Missing, malformed, or unusable target data is `invalid_path`.
+After selection and canonicalization, all target sources use the same
+Herdr-aware decision tree.
 
 The command has no flags and accepts no pipeline input in the initial version.
 The directory shape matches the command's directory-only contract and gives
@@ -159,11 +175,12 @@ break: previously ignored plugin configuration can now prevent inside-Herdr
 execution. The schema is otherwise stable and is not experimentally gated.
 
 Outside Herdr, `hnd` neither reads nor validates plugin configuration. Inside
-Herdr, it resolves and validates the path and complete injected Herdr context
-first, then reads configuration exactly once under the 10-second command
-deadline. The resulting immutable `AgentIdlePolicy` is shared by the initial
-decision and the one permitted recomputation. Invalid configuration prevents
-all Herdr CLI/socket operations, resource actions, and `$env.PWD` mutation.
+Herdr, it resolves and validates the selected target and complete injected
+Herdr context first, then reads configuration exactly once under the 10-second
+command deadline. The resulting immutable `AgentIdlePolicy` is shared by the
+initial decision and the one permitted recomputation. Invalid configuration
+prevents all Herdr CLI/socket operations, resource actions, and caller
+environment mutation.
 
 ### 6.2 Experimental dynamic completion
 
@@ -220,6 +237,11 @@ results; the plugin itself implements no cache. Users should put the opt-in
 in `config.nu` and start a new session. Documentation must not require
 disabling the global completion cache.
 
+An exact typed `-` is the reserved runtime sentinel, not a physical path
+prefix. Completion returns no plugin candidates for it and performs no
+configuration, filesystem, or Herdr work. `./-` and absolute paths ending in
+`/-` retain normal path completion.
+
 Completion collects every valid pane `foreground_cwd` regardless of policy.
 When duplicate physical paths are merged, a pane whose agent status is in the
 parsed policy has reusable-source strength equal to every other configured
@@ -241,20 +263,29 @@ environment, or perform the execution path's bounded recomputation.
 
 All path identity and containment decisions use canonical physical paths.
 
-Path resolution proceeds as follows:
+Target selection and path resolution proceed as follows:
 
 1. Read the caller's absolute cwd with `EngineInterface::get_current_dir()`.
-2. Expand only `~` and a leading `~/` using the caller's home environment.
-3. Resolve a relative target against the caller cwd.
-4. Canonicalize the caller cwd and target, resolving `.`, `..`, and symbolic
+2. Canonicalize the caller cwd once, resolving `.`, `..`, and symbolic links.
+3. Decode the target source as omitted home, bare-`-` previous directory, or
+   an explicit path.
+4. For omitted home, require a non-empty absolute string from caller `HOME`.
+   For previous directory, require a non-empty absolute string from a present
+   caller `OLDPWD`, or select the canonical caller cwd when `OLDPWD` is absent.
+   For an explicit path, expand only `~` and a leading `~/` using caller
+   `HOME`.
+5. Resolve an explicit relative target against the canonical caller cwd.
+6. Canonicalize the selected target, resolving `.`, `..`, and symbolic
    links.
-5. Require the target to exist, be a directory, be enterable, and be
+7. Require the target to exist, be a directory, be enterable, and be
    representable as UTF-8.
 
-The normal-directory-change branch writes the canonical absolute target to
-the caller's `$env.PWD` with `EngineInterface::add_env_var`. It does not change
-the plugin process's working directory and does not require a Nushell
-`def --env` wrapper.
+The normal-directory-change branch writes the canonical pre-action caller cwd
+to the caller's `$env.OLDPWD`, then writes the canonical absolute target to
+the caller's `$env.PWD`, using `EngineInterface::add_env_var`. It does not
+change the plugin process's working directory and does not require a Nushell
+`def --env` wrapper. `NoOp`, pane focus, and resource creation change neither
+variable because the calling pane does not change directory.
 
 Path containment is component-aware, not string-prefix based. A path contains
 itself. The command handles target-equals-cwd as an explicit no-op; a target is
@@ -396,10 +427,10 @@ workspace must not abort the command.
 
 ```mermaid
 flowchart TD
-    A[Receive hnd path] --> B[Resolve and canonicalize caller cwd and target]
+    A[Receive hnd optional path] --> B[Select source; resolve and canonicalize caller cwd and target]
     B -->|Invalid| E1[Return path error; no state change]
     B --> C{HERDR_ENV present?}
-    C -->|No| D[Set caller PWD to canonical target]
+    C -->|No| D[Set caller OLDPWD to canonical cwd, then PWD to target]
     C -->|Yes, not exactly 1| E2[Return invalid Herdr context]
     C -->|Exactly 1| F[Validate complete Herdr context and injected binary]
     F -->|Invalid| E3[Return Herdr error; no fallback]
@@ -422,7 +453,7 @@ flowchart TD
 In ordered pseudocode:
 
 ```text
-resolve and validate canonical caller cwd and target
+resolve and validate canonical caller cwd and selected target
 
 if HERDR_ENV is absent:
     ChangeDirectory(target)
@@ -476,7 +507,8 @@ The implementation uses canonical-path and resource-ID newtypes at this
 boundary. The action set and its semantics are part of this design baseline.
 
 - `NoOp` returns `nothing`.
-- `ChangeDirectory` updates only the calling Nushell scope.
+- `ChangeDirectory` updates only the calling Nushell scope, writing canonical
+  caller cwd to `OLDPWD` before canonical target to `PWD`.
 - `FocusPane` changes Herdr focus and leaves the calling pane's cwd unchanged.
 - `CreateTab` creates a root shell at the target and focuses it; the calling
   pane's cwd remains unchanged.
@@ -515,9 +547,10 @@ The implementation is synchronous and stateless, with three narrow layers.
 
 - Nushell signature and argument decoding;
 - caller cwd and environment reads through `EngineInterface`;
+- command-local home, previous-directory, and explicit target selection;
 - path resolution, strict plugin-configuration parsing, and error spans;
 - orchestration of inspect, decide, recheck, and act;
-- caller `$env.PWD` update;
+- caller `$env.OLDPWD` and `$env.PWD` updates for directory changes;
 - conversion to Nushell `LabeledError` and `nothing`;
 - shared typed configuration and `get_dynamic_completion` for
   positional argument zero, including lexical prefix reconstruction, direct
@@ -625,17 +658,19 @@ or workspace focus.
 | Completion Herdr enrichment, including config/context reads, binary validation, snapshot, live caller, path validation, and semantic construction | 200 milliseconds shared |
 | Entire merged completion request | 250 milliseconds |
 
-The total deadline starts at command entry and is a hard maximum covering path
-resolution, Herdr context and binary validation, plugin-config lookup, Herdr
+The total deadline starts at command entry and is a hard maximum covering
+caller cwd and `HOME`/`OLDPWD` reads, target resolution, Herdr context and
+binary validation, plugin-config lookup, Herdr
 I/O, and the one allowed recomputation. Blocking read-only caller-engine or
 filesystem lookups are waited on a helper thread so the command can return at
 the deadline or on interruption without waiting for the syscall to finish.
-Caller mutations such as `$env.PWD` are not dispatched on an abandonable
-helper: they run only after a halt check and are waited to completion, so a
-timed-out or interrupted invocation cannot change the caller's cwd later. If
-that mutation itself blocks, the invocation may exceed the total deadline in
-order to stay fail-closed. A child process that exceeds its limit is terminated
-and reaped.
+Caller mutations are not dispatched on an abandonable helper. After one final
+halt check, `OLDPWD` and `PWD` are written as one critical section and are
+waited to completion; no timeout or interruption check splits the pair. A
+timed-out or interrupted invocation therefore cannot begin a late caller
+mutation. If either write itself blocks, the invocation may exceed the total
+deadline in order to stay fail-closed. A child process that exceeds its limit
+is terminated and reaped.
 A socket operation that exceeds its limit is closed.
 
 The command observes `EngineInterface::signals()`. On interruption it
@@ -659,6 +694,13 @@ uses one bounded recomputation:
 
 Two concurrent `hnd` calls can still create duplicate resources. This is an
 accepted limitation of the initial version.
+
+Nushell plugin SDK 0.115 exposes only one-variable-at-a-time caller
+environment mutation. The `OLDPWD`/`PWD` update therefore cannot be atomic. If
+the `OLDPWD` write fails, `PWD` is not attempted. If the later `PWD` write
+fails, `hnd` reports the caller-directory update failure and discloses that
+`OLDPWD` may already have changed. The plugin does not attempt an unsafe
+rollback.
 
 If Herdr may have completed a create but its response is lost or invalid, the
 plugin reports that the operation may have partially completed. It never
@@ -684,11 +726,13 @@ Internal failures use these categories before conversion to Nushell
 
 These names are internal and are not a stable machine-readable public API.
 
-Path errors label the path argument span. Malformed configuration values label
-the most specific available value span, unknown keys label the record span,
-and config-read failures label the command head. Context and Herdr errors also
-label the command head. Errors may include the operation, sanitized Herdr error
-code/message, target path, relevant resource ID, and local Herdr socket path.
+Explicit-path and bare-`-` path errors label the path argument span. An error
+from the omitted home target labels the command-head span. Malformed
+configuration values label the most specific available value span, unknown
+keys label the record span, and config-read failures label the command head.
+Context and Herdr errors also label the command head. Errors may include the
+operation, sanitized Herdr error code/message, target path, relevant resource
+ID, and local Herdr socket path.
 The socket path is not treated as a secret. Errors do not dump an environment,
 complete stdout/stderr, or a session snapshot. Untrusted error text is
 length-limited and stripped of control characters.
@@ -703,6 +747,8 @@ configuration, then Herdr inspection and actions.
 
 - User paths and Herdr IDs are passed as distinct argv or JSON values, never
   interpolated into a shell command.
+- Target-source `HOME` and `OLDPWD` values come only from the calling Nushell
+  scope and are validated before any Herdr or caller mutation.
 - Only the Herdr-injected binary is executed.
 - The binary's final target is validated as a regular executable file.
 - The direct-focus socket is absolute, local, a Unix socket, and owned by the
@@ -711,8 +757,9 @@ configuration, then Herdr inspection and actions.
 - JSON inputs and outputs are typed and size-bounded.
 - Unknown response fields are tolerated, but missing or malformed required
   fields fail closed.
-- Invalid configuration fails before any Herdr call, socket connection,
-  resource action, or caller-environment mutation. `unknown` agent evidence
+- Invalid target source data or configuration fails before any Herdr call,
+  socket connection, resource action, or caller-environment mutation.
+  `unknown` agent evidence
   remains ineligible regardless of internal policy construction.
 - The plugin never deletes, closes, moves, or overwrites an existing Herdr
   resource.
@@ -775,9 +822,12 @@ A temporary fake Unix socket server verifies:
 
 Focused tests verify:
 
-- the `hnd <path: directory>` signature;
+- the `hnd [path: directory]` signature and zero-argument SDK decoding;
 - caller cwd and environment access through `EngineInterface` boundaries;
-- canonical `$env.PWD` mutation only for `ChangeDirectory`;
+- omitted home, bare-`-` previous-directory, missing-`OLDPWD` fallback, and
+  literal `./-` target selection;
+- canonical `$env.OLDPWD` then `$env.PWD` mutation only for
+  `ChangeDirectory`, including write order and partial-write failures;
 - `nothing` on success;
 - correct `LabeledError` spans and categories;
 - strict config schema, defaults, read-once lifecycle, error precedence,
@@ -796,8 +846,10 @@ completion never calls `process-info` or mutation commands. The compiled
 plugin protocol test verifies the directory signature, that disabled
 dynamic completion returns native fallback, and that enabled completion
 returns structured directory suggestions through the SDK completion call
-path. A compiled execution call verifies that real plugin configuration reaches
-the command boundary.
+path. It also verifies that positional completion remains available for the
+optional argument and exact `-` performs no completion work. Compiled execution
+calls verify that zero arguments reach the real command boundary and that real
+plugin configuration reaches it.
 
 ### 19.6 Optional end-to-end validation
 

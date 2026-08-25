@@ -59,6 +59,9 @@ fn complete_directory(
     span: Option<Span>,
     started: Instant,
 ) -> Option<Vec<DynamicSuggestion>> {
+    if typed == "-" {
+        return Some(Vec::new());
+    }
     let overall_deadline = started + TOTAL_COMPLETION_DEADLINE;
     let herdr_deadline = started + HERDR_COMPLETION_DEADLINE;
     let halt_overall = || engine.interrupted() || Instant::now() >= overall_deadline;
@@ -417,6 +420,10 @@ mod tests {
             Ok(self.env.get(name).cloned())
         }
 
+        fn path_env_var(&self, name: &str) -> Result<Option<Value>, Error> {
+            self.env_var(name)
+        }
+
         fn env_vars(&self) -> Result<HashMap<String, Value>, Error> {
             if !self.env_delay.is_zero() {
                 thread::sleep(self.env_delay);
@@ -605,6 +612,22 @@ esac
         let cwd = TempDir::new("outside");
         let engine = FakeEngine::outside(cwd.path().to_str().unwrap()).enabled();
         assert!(complete_directory(&engine, "", None, Instant::now()).is_none());
+    }
+
+    #[test]
+    fn exact_dash_returns_no_candidates_before_any_completion_lookup() {
+        let cwd = TempDir::new("dash-sentinel");
+        let mut engine = FakeEngine::outside(cwd.path().to_str().unwrap()).enabled();
+        engine.config_delay = Duration::from_millis(500);
+        engine.cwd_delay = Duration::from_millis(500);
+        engine.env_delay = Duration::from_millis(500);
+
+        let started = Instant::now();
+        assert!(
+            complete_directory(&engine, "-", Some(Span::test_data()), started)
+                .is_some_and(|items| items.is_empty())
+        );
+        assert!(started.elapsed() < Duration::from_millis(40));
     }
 
     #[test]

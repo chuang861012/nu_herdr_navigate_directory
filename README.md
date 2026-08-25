@@ -3,12 +3,13 @@
 Herdr-aware directory navigation for Nushell.
 
 ```nu
-hnd <path: directory> -> nothing
+hnd [path: directory] -> nothing
 ```
 
-Point `hnd` at a directory and it picks the least disruptive move: stay in this
-pane when you go deeper, jump to an idle pane already there, or open a new tab
-or workspace. Success is silent.
+Run `hnd` with no path for home, use `hnd -` for the previous directory, or
+point it at another directory. It picks the least disruptive move: stay in
+this pane when you go deeper, jump to an idle pane already there, or open a new
+tab or workspace. Success is silent.
 
 See [the system design](docs/system-design.md) for architecture, constraints,
 and verification. Notable changes are in the [changelog](CHANGELOG.md).
@@ -64,8 +65,9 @@ registry.
 | Home-relative path | `hnd ~/src` | ✅ | Only a leading `~/` is expanded |
 | Path containing spaces | `hnd "my dir"` | ✅ | Quote the path using normal Nushell syntax |
 | Symbolic-link path | `hnd linked-dir` | ✅ | Resolved to its canonical physical directory |
-| No path | `hnd` | ❌ | One path argument is required |
-| Previous directory | `hnd -` | ❌ | `cd -` behavior is not implemented |
+| No path | `hnd` | ✅ | Uses the caller's `HOME`; it must be a non-empty absolute path |
+| Previous directory | `hnd -` | ✅ | Uses absolute caller `OLDPWD`, or the current directory when `OLDPWD` is absent |
+| Literal directory named `-` | `hnd ./-` | ✅ | A bare `-` is reserved; `./-` and absolute paths remain literal paths |
 | Named-user home | `hnd ~otheruser` | ❌ | `~otheruser` expansion is not implemented |
 | Glob | `hnd */src` | ❌ | Glob expansion is not implemented |
 | Multiple paths | `hnd src tests` | ❌ | Exactly one path is accepted |
@@ -74,14 +76,23 @@ registry.
 
 ## How `hnd` decides
 
-The target must exist, be an enterable directory, and resolve to a canonical
-UTF-8 path. `~` and a leading `~/` are expanded. Relative paths are resolved
-against the caller's cwd.
+The selected target must exist, be an enterable directory, and resolve to a
+canonical UTF-8 path. `~` and a leading `~/` are expanded from the caller's
+`HOME`. Relative paths are resolved against the caller's cwd. `hnd` also reads
+`HOME` and `OLDPWD` from the caller, never from the plugin process.
+
+An omitted path requires a valid `HOME`. A present `OLDPWD` must be a
+non-empty absolute string and a usable directory; malformed values fail with
+`invalid_path`. If `OLDPWD` is absent, `hnd -` selects the canonical current
+directory, matching Nushell 0.115's effective fallback.
 
 ### Outside Herdr
 
-If `HERDR_ENV` is absent, `hnd` sets the caller's `$env.PWD` to the canonical
-target. It does not change the plugin process's working directory.
+If `HERDR_ENV` is absent, `hnd` writes the canonical caller cwd to
+`$env.OLDPWD`, then sets `$env.PWD` to the canonical target. This establishes
+history for a later `hnd -`; repeated successful `hnd -` calls toggle between
+the two directories. The plugin does not change its own process working
+directory.
 
 Any other `HERDR_ENV` value is an error.
 
@@ -92,9 +103,9 @@ action:
 
 ```mermaid
 flowchart TD
-    A[hnd path] --> B[Canonicalize cwd and target]
+    A[hnd optional path] --> B[Select and canonicalize cwd and target]
     B --> C{Inside Herdr?}
-    C -->|No| D[Set $env.PWD to the target]
+    C -->|No| D[Set $env.OLDPWD to cwd, then $env.PWD to target]
     C -->|Yes| H{Target equals cwd?}
     H -->|Yes| N[Do nothing]
     H -->|No| I{Idle pane at the exact path<br/>in the current workspace?}
@@ -126,7 +137,14 @@ panes at the target are skipped; they do not block a directory change or the
 creation of a new tab or workspace.
 
 Created tabs and workspaces are focused. The calling pane stays where it is
-unless the action is a downward directory change.
+unless the action is a downward directory change. `NoOp`, focus, and create
+actions leave both its `PWD` and `OLDPWD` unchanged; only a real directory
+change rotates history.
+
+Nushell's plugin SDK updates one caller variable at a time, so the history
+pair cannot be atomic. If writing `OLDPWD` fails, `PWD` is not attempted. If
+the later `PWD` write fails, `hnd` reports the failure and warns that `OLDPWD`
+may already have changed; it does not attempt an unsafe rollback.
 
 ### Idle panes
 
@@ -199,6 +217,10 @@ Only the boolean `true` turns it on. A missing key, `false`, another type, or an
 invalid or unreadable plugin config leaves native Nushell directory completion
 in place. This flag never changes what `hnd` does when you press Enter.
 
+An exact typed `-` is the runtime previous-directory sentinel, so dynamic
+completion does not query Herdr or the filesystem for it. `./-` and absolute
+paths ending in `/-` retain normal directory completion.
+
 When enabled inside Herdr, Tab may show workspace roots and pane foreground
 directories from the current session alongside direct child directories.
 All valid pane paths remain candidates. When duplicate physical paths merge,
@@ -255,7 +277,7 @@ plugin use herdr_navigate_directory
 ## Future work
 
 - Windows support
-- Extra `cd` forms
+- Named-user home expansion and other extra `cd` forms
 - Directory creation
 - crates.io or Homebrew packages
 - Prebuilt binaries

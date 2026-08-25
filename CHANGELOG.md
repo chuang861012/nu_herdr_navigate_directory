@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- No-path and previous-directory navigation: `hnd` now uses the caller's home
+  directory, while `hnd -` uses caller `OLDPWD` or falls back to the current
+  directory when history is absent.
 - Stable `idle_agent_statuses` plugin configuration for choosing which exact
   agent states make a pane reusable. It accepts `idle`, `done`, `blocked`, and
   `working`, defaults to `[idle done]`, and accepts an empty list to disable
@@ -23,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** a bare `-` is now the previous-directory sentinel instead of a
+  literal relative directory path. Use `hnd ./-` or an absolute path to reach a
+  directory named `-`.
+- Successful directory changes now write the canonical prior directory to
+  `OLDPWD` before updating `PWD`. Herdr focus/create actions and no-ops leave
+  both values unchanged.
 - **Breaking:** inside Herdr, a present plugin configuration must now be a
   record containing only `dynamic_completion` and `idle_agent_statuses`.
   Non-record values, unknown keys, invalid status lists, and unreadable plugin

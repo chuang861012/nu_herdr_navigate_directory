@@ -127,14 +127,12 @@ impl std::fmt::Display for CanonicalPath {
 }
 
 /// Expand only `~` and a leading `~/`, resolve against the caller cwd, then canonicalize.
+#[cfg(test)]
 pub(crate) fn resolve_paths(
     caller_cwd: &Path,
     target: &str,
     home: Option<&str>,
 ) -> Result<ResolvedPaths, Error> {
-    if target.is_empty() {
-        return Err(Error::invalid_path("target path is empty"));
-    }
     if !caller_cwd.is_absolute() {
         return Err(Error::invalid_path(format!(
             "caller working directory must be an absolute path: {}",
@@ -143,15 +141,27 @@ pub(crate) fn resolve_paths(
     }
 
     let caller_cwd = CanonicalPath::directory(caller_cwd)?;
+    let target = resolve_target(&caller_cwd, target, home)?;
+
+    Ok(ResolvedPaths { caller_cwd, target })
+}
+
+/// Resolve one explicit or environment-selected target from a canonical caller cwd.
+pub(crate) fn resolve_target(
+    caller_cwd: &CanonicalPath,
+    target: &str,
+    home: Option<&str>,
+) -> Result<CanonicalPath, Error> {
+    if target.is_empty() {
+        return Err(Error::invalid_path("target path is empty"));
+    }
     let expanded = expand_leading_home(target, home)?;
     let absolute_target = if expanded.is_absolute() {
         expanded
     } else {
         caller_cwd.as_path().join(expanded)
     };
-    let target = CanonicalPath::directory(&absolute_target)?;
-
-    Ok(ResolvedPaths { caller_cwd, target })
+    CanonicalPath::directory(&absolute_target)
 }
 
 pub(crate) fn expand_leading_home(target: &str, home: Option<&str>) -> Result<PathBuf, Error> {
