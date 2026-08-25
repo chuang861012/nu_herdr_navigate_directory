@@ -8,8 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use nu_plugin_core::{Encoder, MsgPackSerializer};
 use nu_plugin_protocol::{
-    DynamicCompletionCall, EngineCall, EngineCallResponse, GetCompletionArgType, GetCompletionInfo,
-    PipelineDataHeader, PluginCall, PluginCallResponse, PluginInput, PluginOutput, ProtocolInfo,
+    CallInfo, DynamicCompletionCall, EngineCall, EngineCallResponse, EvaluatedCall,
+    GetCompletionArgType, GetCompletionInfo, PipelineDataHeader, PluginCall, PluginCallResponse,
+    PluginInput, PluginOutput, ProtocolInfo,
 };
 use nu_protocol::{
     DynamicSuggestion, Span, SuggestionKind, SyntaxShape, Type, Value,
@@ -161,6 +162,101 @@ fn compiled_binary_dynamic_completion_falls_back_when_enabled_outside_herdr() {
 }
 
 #[test]
+fn compiled_binary_execution_reads_and_rejects_invalid_plugin_configuration() {
+    let root = unique_temp("invalid-execution-config");
+    let record_path = root.join("record");
+    let bin = write_executable(
+        &root,
+        "herdr",
+        &format!(
+            "#!/bin/sh\nprintf invoked >> {}\nexit 99\n",
+            sh_single(&record_path.display().to_string())
+        ),
+    );
+    let config_span = Span::new(40, 50);
+    let config = Value::bool(true, config_span);
+    let mut env = HashMap::new();
+    for (name, value) in [
+        ("HERDR_ENV", "1"),
+        ("HERDR_BIN_PATH", bin.to_str().unwrap()),
+        ("HERDR_SOCKET_PATH", "/tmp/hnd-unused.sock"),
+        ("HERDR_WORKSPACE_ID", "w1"),
+        ("HERDR_TAB_ID", "w1:t1"),
+        ("HERDR_PANE_ID", "w1:p1"),
+    ] {
+        env.insert(name.to_string(), Value::test_string(value));
+    }
+    let harness = CompletionHarness {
+        plugin_config: Some(config),
+        env,
+        cwd: root.to_str().unwrap().to_string(),
+    };
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nu_plugin_herdr_navigate_directory"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn plugin binary");
+    let mut stdin = child.stdin.take().expect("plugin stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("plugin stdout"));
+    let encoder = handshake(&mut stdin, &mut stdout);
+    let mut call = EvaluatedCall::new(Span::new(1, 4));
+    call.add_positional(Value::string(root.to_str().unwrap(), Span::new(10, 20)));
+    encode(
+        &encoder,
+        &mut stdin,
+        &PluginInput::Call(
+            0,
+            PluginCall::Run(CallInfo {
+                name: "hnd".into(),
+                call,
+                input: PipelineDataHeader::Empty,
+            }),
+        ),
+    );
+    stdin.flush().expect("flush run call");
+
+    let error = loop {
+        let message = encoder
+            .decode(&mut stdout)
+            .expect("decode plugin output")
+            .expect("plugin output");
+        match message {
+            PluginOutput::CallResponse(0, PluginCallResponse::Error(error)) => break error,
+            PluginOutput::EngineCall { id, call, .. } => {
+                encode(
+                    &encoder,
+                    &mut stdin,
+                    &PluginInput::EngineCallResponse(id, respond_engine_call(call, &harness)),
+                );
+                stdin.flush().expect("flush engine response");
+            }
+            PluginOutput::Hello(_) | PluginOutput::Option(_) => {}
+            other => panic!("unexpected plugin output: {other:?}"),
+        }
+    };
+    let nu_protocol::ShellError::LabeledError(error) = error else {
+        panic!("expected labeled error");
+    };
+    assert_eq!(
+        error.code.as_deref(),
+        Some("herdr_navigate_directory::invalid_configuration")
+    );
+    assert_eq!(error.labels[0].span, config_span);
+    assert!(
+        !record_path.exists(),
+        "invalid config must not invoke Herdr"
+    );
+
+    encode(&encoder, &mut stdin, &PluginInput::Goodbye);
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn compiled_binary_dynamic_completion_returns_directory_items_when_enabled() {
     let root = unique_temp("enabled-sdk");
     let src = root.join("src");
@@ -219,7 +315,7 @@ fn compiled_binary_dynamic_completion_returns_directory_items_when_enabled() {
                 "workspace_id": "w1",
                 "tab_id": "w1:t1",
                 "focused": false,
-                "agent_status": "idle",
+                "agent_status": "blocked",
                 "revision": 2,
                 "agent": "codex",
                 "foreground_cwd": "{src_utf8}"
@@ -284,6 +380,7 @@ esac
 
     let config = Value::test_record(record! {
         "dynamic_completion" => Value::test_bool(true),
+        "idle_agent_statuses" => Value::test_list(vec![Value::test_string("blocked")]),
     });
     let mut env = HashMap::new();
     env.insert("HERDR_ENV".into(), Value::test_string("1"));
@@ -320,7 +417,7 @@ esac
                 && item
                     .description
                     .as_deref()
-                    .is_some_and(|text| text.contains("agent idle"))
+                    .is_some_and(|text| text.contains("agent blocked"))
         }),
         "expected a Herdr semantic directory suggestion, got {suggestions:?}"
     );

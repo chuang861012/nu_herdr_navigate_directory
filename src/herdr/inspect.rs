@@ -1186,14 +1186,21 @@ esac
             panic!("expected evidence");
         };
         assert!(evidence.shell_pid.is_none());
-        assert!(!crate::domain::Occupant::Shell(Some(evidence.clone())).is_idle());
+        assert!(
+            !crate::domain::Occupant::Shell(Some(evidence.clone()))
+                .is_idle(&crate::domain::AgentIdlePolicy::default())
+        );
 
         let mut session = match inspect_session(&context, || false).unwrap() {
             SessionInspection::Ready { session, .. } => session,
             SessionInspection::Stale => panic!("session"),
         };
         apply_shell_evidence(&mut session, &PaneId::new("w1:p1"), evidence);
-        assert!(!session.workspaces[0].tabs[0].panes[0].occupant.is_idle());
+        assert!(
+            !session.workspaces[0].tabs[0].panes[0]
+                .occupant
+                .is_idle(&crate::domain::AgentIdlePolicy::default())
+        );
 
         let err_script = TempDir::new("not-found");
         let bin = write_executable(

@@ -1,6 +1,7 @@
 //! Nushell plugin identity, `hnd` signature, and command-boundary orchestration.
 
 mod complete;
+mod config;
 mod display;
 mod orchestrate;
 mod prefix;
@@ -23,6 +24,7 @@ use crate::herdr::{
     EnvValue, HerdrMode, RunError, classify_herdr_env, inside_context, run_bounded,
 };
 
+use config::read_command_config;
 use orchestrate::{Outcome, TOTAL_DEADLINE, check, map_halt, orchestrate};
 
 /// Caller-side Nushell engine operations used by one `hnd` invocation.
@@ -62,7 +64,7 @@ impl CallerEngine for EngineInterface {
 
     fn plugin_config(&self) -> Result<Option<Value>, Error> {
         self.get_plugin_config()
-            .map_err(|_| Error::invalid_herdr_context("plugin configuration is unavailable"))
+            .map_err(|_| Error::invalid_configuration("plugin configuration is unavailable"))
     }
 }
 
@@ -95,7 +97,7 @@ impl SimplePluginCommand for Hnd {
     }
 
     fn extra_description(&self) -> &str {
-        "Outside Herdr, hnd updates $env.PWD. Inside Herdr, it reuses an idle pane, changes directory only for downward navigation, or creates a focused tab or workspace. Successful calls return nothing. Experimental opt-in dynamic completion can enrich the directory argument with live Herdr workspace and pane paths; it never changes execution behavior."
+        "Outside Herdr, hnd updates $env.PWD. Inside Herdr, it reuses an eligible pane, changes directory only for downward navigation, or creates a focused tab or workspace. Configure reusable agent states with $env.config.plugins.herdr_navigate_directory.idle_agent_statuses; the default is [idle done]. Successful calls return nothing. Experimental opt-in dynamic completion can enrich the directory argument with live Herdr workspace and pane paths; it is not an action preview."
     }
 
     fn signature(&self) -> Signature {
@@ -165,7 +167,23 @@ fn run_hnd(
     };
     check(&interrupted, deadline).map_err(&fail)?;
 
-    match orchestrate(&paths, &mode, &interrupted, deadline) {
+    let policy = match mode {
+        HerdrMode::Outside => crate::domain::AgentIdlePolicy::default(),
+        HerdrMode::Inside(_) => {
+            let engine_worker = engine.clone();
+            let head = call.head;
+            match run_bounded(&halt, move || read_command_config(&engine_worker, head)) {
+                Ok(Ok(config)) => config.idle_agent_policy,
+                Ok(Err(error)) => {
+                    return Err(labeled_error_at(&error.error, error.span));
+                }
+                Err(error) => return Err(fail(map_halt(error, &interrupted))),
+            }
+        }
+    };
+    check(&interrupted, deadline).map_err(&fail)?;
+
+    match orchestrate(&paths, &mode, &policy, &interrupted, deadline) {
         Ok(outcome) => apply_outcome(engine, outcome, call.head, path_span, &halt, &interrupted),
         Err(error) => Err(fail(error)),
     }
@@ -278,6 +296,10 @@ fn labeled_error(error: &Error, path_span: Span, head: Span) -> LabeledError {
         ErrorKind::InvalidPath => path_span,
         _ => head,
     };
+    labeled_error_at(error, span)
+}
+
+fn labeled_error_at(error: &Error, span: Span) -> LabeledError {
     LabeledError::new(error.message())
         .with_code(format!("herdr_navigate_directory::{}", error.kind()))
         .with_label(error.kind().as_str(), span)
@@ -292,6 +314,7 @@ mod tests {
     use crate::PLUGIN_IDENTITY;
     use crate::command::orchestrate::{Outcome, TOTAL_DEADLINE};
     use crate::domain::{CanonicalPath, Error, ErrorKind};
+    use crate::herdr::test_support::{TempDir, lock_cli, write_executable};
     use crate::herdr::{EnvValue, classify_herdr_env};
     use nu_plugin::{EvaluatedCall, Plugin, PluginCommand};
     use nu_protocol::{Span, SyntaxShape, Type, Value};
@@ -359,6 +382,8 @@ mod tests {
         env_writes: Arc<Mutex<Vec<(String, String)>>>,
         cwd_calls: Arc<AtomicUsize>,
         plugin_config: Result<Option<Value>, Error>,
+        config_calls: Arc<AtomicUsize>,
+        config_delay: Duration,
     }
 
     impl FakeEngine {
@@ -373,6 +398,8 @@ mod tests {
                 env_writes: Arc::new(Mutex::new(Vec::new())),
                 cwd_calls: Arc::new(AtomicUsize::new(0)),
                 plugin_config: Ok(None),
+                config_calls: Arc::new(AtomicUsize::new(0)),
+                config_delay: Duration::ZERO,
             }
         }
 
@@ -426,6 +453,10 @@ mod tests {
         }
 
         fn plugin_config(&self) -> Result<Option<Value>, Error> {
+            self.config_calls.fetch_add(1, Ordering::SeqCst);
+            if !self.config_delay.is_zero() {
+                thread::sleep(self.config_delay);
+            }
             match &self.plugin_config {
                 Ok(value) => Ok(value.clone()),
                 Err(error) => Err(error.clone()),
@@ -435,6 +466,23 @@ mod tests {
 
     fn test_call(path: &str) -> EvaluatedCall {
         EvaluatedCall::new(Span::test_data()).with_positional(Value::test_string(path))
+    }
+
+    fn inside_engine(cwd: &str, bin: &str, socket: &str) -> FakeEngine {
+        let mut engine = FakeEngine::outside(cwd);
+        for (name, value) in [
+            ("HERDR_ENV", "1"),
+            ("HERDR_BIN_PATH", bin),
+            ("HERDR_SOCKET_PATH", socket),
+            ("HERDR_WORKSPACE_ID", "w1"),
+            ("HERDR_TAB_ID", "w1:t1"),
+            ("HERDR_PANE_ID", "w1:p1"),
+        ] {
+            engine
+                .env
+                .insert(name.to_string(), Value::test_string(value));
+        }
+        engine
     }
 
     #[test]
@@ -484,6 +532,131 @@ mod tests {
             engine.writes().as_slice(),
             [("PWD".to_string(), path.as_str().to_string())]
         );
+    }
+
+    #[test]
+    fn outside_herdr_never_reads_or_validates_plugin_configuration() {
+        let cwd = std::env::temp_dir();
+        let cwd_str = cwd.to_str().expect("temp dir is UTF-8");
+        let mut engine = FakeEngine::outside(cwd_str);
+        engine.plugin_config = Err(Error::invalid_configuration("unreadable"));
+        engine.config_delay = Duration::from_millis(500);
+        let started = Instant::now();
+        let value = run_hnd(
+            &engine,
+            &test_call(cwd_str),
+            Instant::now() + TOTAL_DEADLINE,
+        )
+        .unwrap();
+        assert!(value.is_nothing());
+        assert_eq!(engine.config_calls.load(Ordering::SeqCst), 0);
+        assert!(started.elapsed() < Duration::from_millis(250));
+    }
+
+    #[test]
+    fn path_and_herdr_context_errors_precede_invalid_configuration() {
+        let cwd = std::env::temp_dir();
+        let cwd_str = cwd.to_str().expect("temp dir is UTF-8");
+        let mut invalid_path = FakeEngine::outside(cwd_str);
+        invalid_path.plugin_config = Ok(Some(Value::test_bool(true)));
+        let missing = cwd.join("hnd-path-that-must-not-exist");
+        let error = run_hnd(
+            &invalid_path,
+            &test_call(missing.to_str().unwrap()),
+            Instant::now() + TOTAL_DEADLINE,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.code.as_deref(),
+            Some("herdr_navigate_directory::invalid_path")
+        );
+        assert_eq!(invalid_path.config_calls.load(Ordering::SeqCst), 0);
+
+        let mut invalid_context = FakeEngine::outside(cwd_str);
+        invalid_context
+            .env
+            .insert("HERDR_ENV".into(), Value::test_string("1"));
+        invalid_context.plugin_config = Ok(Some(Value::test_bool(true)));
+        let error = run_hnd(
+            &invalid_context,
+            &test_call(cwd_str),
+            Instant::now() + TOTAL_DEADLINE,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.code.as_deref(),
+            Some("herdr_navigate_directory::invalid_herdr_context")
+        );
+        assert_eq!(invalid_context.config_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn invalid_inside_configuration_is_read_once_and_uses_its_own_span() {
+        let _cli = lock_cli();
+        let dir = TempDir::new("command-config");
+        let bin = write_executable(dir.path(), "herdr", "#!/bin/sh\nexit 99\n");
+        let cwd = dir.path().to_str().unwrap();
+        let mut engine = inside_engine(cwd, bin.to_str().unwrap(), "/tmp/hnd-unused.sock");
+        let config_span = Span::new(40, 50);
+        engine.plugin_config = Ok(Some(Value::bool(true, config_span)));
+        let head = Span::new(1, 4);
+        let call = EvaluatedCall::new(head).with_positional(Value::string(cwd, Span::new(10, 20)));
+        let error = run_hnd(&engine, &call, Instant::now() + TOTAL_DEADLINE).unwrap_err();
+        assert_eq!(
+            error.code.as_deref(),
+            Some("herdr_navigate_directory::invalid_configuration")
+        );
+        assert_eq!(error.labels[0].span, config_span);
+        assert_eq!(engine.config_calls.load(Ordering::SeqCst), 1);
+        assert!(engine.writes().is_empty());
+
+        let mut unreadable = inside_engine(cwd, bin.to_str().unwrap(), "/tmp/hnd-unused.sock");
+        unreadable.plugin_config = Err(Error::invalid_herdr_context("lookup failed"));
+        let error = run_hnd(&unreadable, &call, Instant::now() + TOTAL_DEADLINE).unwrap_err();
+        assert_eq!(
+            error.code.as_deref(),
+            Some("herdr_navigate_directory::invalid_configuration")
+        );
+        assert_eq!(error.labels[0].span, head);
+        assert_eq!(unreadable.config_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn config_lookup_honors_total_deadline_and_interruption() {
+        let _cli = lock_cli();
+        let dir = TempDir::new("command-config-halt");
+        let bin = write_executable(dir.path(), "herdr", "#!/bin/sh\nexit 99\n");
+        let cwd = dir.path().to_str().unwrap();
+
+        let mut timeout = inside_engine(cwd, bin.to_str().unwrap(), "/tmp/hnd-unused.sock");
+        timeout.config_delay = Duration::from_millis(500);
+        let started = Instant::now();
+        let error = run_hnd(
+            &timeout,
+            &test_call(cwd),
+            Instant::now() + Duration::from_millis(30),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.code.as_deref(),
+            Some("herdr_navigate_directory::herdr_timeout")
+        );
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert_eq!(timeout.config_calls.load(Ordering::SeqCst), 1);
+
+        let mut interrupted = inside_engine(cwd, bin.to_str().unwrap(), "/tmp/hnd-unused.sock");
+        interrupted.config_delay = Duration::from_millis(500);
+        interrupted.interrupt_after = Some(Instant::now() + Duration::from_millis(30));
+        let started = Instant::now();
+        let error = run_hnd(
+            &interrupted,
+            &test_call(cwd),
+            Instant::now() + TOTAL_DEADLINE,
+        )
+        .unwrap_err();
+        assert!(error.msg.to_lowercase().contains("interrupt"));
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert_eq!(interrupted.config_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

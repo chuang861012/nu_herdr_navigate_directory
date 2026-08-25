@@ -15,8 +15,8 @@ pub(crate) use completion::{
 pub(crate) use decision::{decide, nearest_containing_workspace};
 pub(crate) use path::{CanonicalPath, ResolvedPaths, expand_leading_home, resolve_paths};
 pub(crate) use types::{
-    Action, AgentStatus, Caller, ForegroundProcess, Occupant, Pane, PaneId, Session,
-    ShellProcessEvidence, Tab, TabId, Workspace, WorkspaceId,
+    Action, AgentIdlePolicy, AgentStatus, Caller, ForegroundProcess, Occupant, Pane, PaneId,
+    Session, ShellProcessEvidence, Tab, TabId, Workspace, WorkspaceId,
 };
 
 /// Internal failure category before conversion to a Nushell `LabeledError`.
@@ -27,6 +27,7 @@ pub(crate) enum ErrorKind {
     InvalidPath,
     UnsupportedPlatform,
     InvalidHerdrContext,
+    InvalidConfiguration,
     IncompatibleHerdr,
     HerdrTimeout,
     HerdrTransport,
@@ -40,6 +41,7 @@ impl ErrorKind {
             Self::InvalidPath => "invalid_path",
             Self::UnsupportedPlatform => "unsupported_platform",
             Self::InvalidHerdrContext => "invalid_herdr_context",
+            Self::InvalidConfiguration => "invalid_configuration",
             Self::IncompatibleHerdr => "incompatible_herdr",
             Self::HerdrTimeout => "herdr_timeout",
             Self::HerdrTransport => "herdr_transport",
@@ -80,6 +82,10 @@ impl Error {
 
     pub(crate) fn invalid_herdr_context(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::InvalidHerdrContext, message)
+    }
+
+    pub(crate) fn invalid_configuration(message: impl Into<String>) -> Self {
+        Self::new(ErrorKind::InvalidConfiguration, message)
     }
 
     pub(crate) fn incompatible_herdr(message: impl Into<String>) -> Self {
@@ -129,6 +135,7 @@ mod tests {
             (ErrorKind::InvalidPath, "invalid_path"),
             (ErrorKind::UnsupportedPlatform, "unsupported_platform"),
             (ErrorKind::InvalidHerdrContext, "invalid_herdr_context"),
+            (ErrorKind::InvalidConfiguration, "invalid_configuration"),
             (ErrorKind::IncompatibleHerdr, "incompatible_herdr"),
             (ErrorKind::HerdrTimeout, "herdr_timeout"),
             (ErrorKind::HerdrTransport, "herdr_transport"),

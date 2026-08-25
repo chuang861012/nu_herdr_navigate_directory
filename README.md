@@ -74,10 +74,6 @@ registry.
 
 ## How `hnd` decides
 
-> [!WARNING]
-> `hnd` is opinionated. This version does not provide behavior customization.
-> Customization may be added in a future version.
-
 The target must exist, be an enterable directory, and resolve to a canonical
 UTF-8 path. `~` and a leading `~/` are expanded. Relative paths are resolved
 against the caller's cwd.
@@ -140,10 +136,11 @@ meets one of these idle conditions:
 | Pane type | Treated as idle | Not treated as idle |
 | --------- | --------------- | ------------------- |
 | Shell | No agent is detected and process info proves the interactive shell itself is in the foreground | Process info is incomplete or another foreground process is active |
-| Agent | Its status is exactly `idle` or `done` | Its status is `working`, `blocked`, or `unknown` |
+| Agent | Its status is selected by `idle_agent_statuses`; the default is `idle` or `done` | Its status is not selected, or is `unknown` |
 
 When several idle panes match, `hnd` prefers the caller's tab, then the
-workspace's focused tab, then snapshot list order.
+workspace's focused tab, then snapshot list order. Every selected agent status
+and a proven-idle shell have equal weight.
 
 ### Examples
 
@@ -156,13 +153,33 @@ workspace's focused tab, then snapshot list order.
 
 ## Configuration
 
-> [!WARNING]
-> `hnd` is opinionated. This version does not provide behavior customization
-> for navigation. Customization may be added in a future version.
+Set plugin configuration in `config.nu`. The safe, backward-compatible default
+is:
 
-There are no flags, environment variables, or config files that change how
-`hnd` chooses an action. The decision tree above is the complete execution
-behavior.
+```nu
+$env.config.plugins.herdr_navigate_directory = {
+  dynamic_completion: false
+  idle_agent_statuses: [idle done]
+}
+```
+
+`idle_agent_statuses` controls which detected agent panes may be reused at an
+exact target path. It accepts only the exact lowercase values `idle`, `done`,
+`blocked`, and `working`. Entries have set semantics: duplicates and order do
+not affect selection. An empty list disables agent-pane reuse while preserving
+reuse of shell panes whose process information proves the interactive shell is
+idle. `unknown` can never be selected.
+
+> [!WARNING]
+> Selecting `blocked` or `working` intentionally allows `hnd` to focus and
+> reuse panes in those states. The focus is a silent successful action.
+
+The record may contain only `dynamic_completion` and `idle_agent_statuses`.
+Inside Herdr, an unreadable config, non-record config, unknown key, invalid list
+or member type, or unsupported status returns `invalid_configuration` before
+any Herdr operation or directory change. Outside Herdr, `hnd` does not read or
+validate plugin configuration. Execution reads the latest configuration once
+on every invocation, including the one allowed state recomputation.
 
 ### Experimental dynamic completion
 
@@ -174,26 +191,41 @@ Directory completion is experimental and off by default. Enable it in
 ```nu
 $env.config.plugins.herdr_navigate_directory = {
   dynamic_completion: true
+  idle_agent_statuses: [idle done]
 }
 ```
 
-Only the boolean `true` turns it on. A missing config, a missing key, `false`,
-another type, or a config-read failure leaves native Nushell directory
-completion in place. The setting never changes what `hnd` does when you press
-Enter.
+Only the boolean `true` turns it on. A missing key, `false`, another type, or an
+invalid or unreadable plugin config leaves native Nushell directory completion
+in place. This flag never changes what `hnd` does when you press Enter.
 
 When enabled inside Herdr, Tab may show workspace roots and pane foreground
 directories from the current session alongside direct child directories.
-Descriptions are informational; `hnd` re-reads live state before it focuses a
-pane or creates a resource. Outside Herdr, and whenever Herdr cannot be
-inspected confidently, completion falls back to native directory completion.
+All valid pane paths remain candidates. When duplicate physical paths merge,
+`idle_agent_statuses` gives selected statuses reusable-source strength while
+descriptions keep the real state, such as `agent blocked`. Descriptions are
+informational; `hnd` re-reads live state and current configuration before it
+focuses a pane or creates a resource. Outside Herdr, and whenever Herdr cannot
+be inspected confidently, completion falls back to native directory
+completion.
 
 > [!WARNING]
 > Nushell 0.115 may cache plugin completion results for the same command line.
 > Put the opt-in in `config.nu` and start a new session. Changing the setting
 > interactively is not guaranteed to refresh an already cached answer. The
 > plugin does not implement its own cache and does not require disabling
-> Nushell's global completion cache.
+> Nushell's global completion cache. This caching caveat applies to completion
+> only; `hnd` execution reads current configuration on every invocation.
+>
+> If fresh completion results are more important than cache performance, you
+> can disable Nushell's completion cache in `config.nu`:
+>
+> ```nu
+> $env.config.completions.cache_size = 0
+> ```
+>
+> This is optional and affects every Nushell completion, not only `hnd`. It may
+> increase completion latency, so evaluate the tradeoff for your workflow.
 
 ## Development
 
@@ -223,7 +255,6 @@ plugin use herdr_navigate_directory
 ## Future work
 
 - Windows support
-- Configuration
 - Extra `cd` forms
 - Directory creation
 - crates.io or Homebrew packages

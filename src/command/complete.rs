@@ -5,14 +5,15 @@ use std::fs;
 use std::time::{Duration, Instant};
 
 use nu_plugin::DynamicCompletionCall;
-use nu_protocol::{DynamicSuggestion, Span, Value, ast::Expr, engine::ArgType};
+use nu_protocol::{DynamicSuggestion, Span, ast::Expr, engine::ArgType};
 
+use super::config::read_command_config;
 use super::display::{FilesystemAlias, to_suggestion};
 use super::prefix::{TypedPrefix, parse_typed_prefix, resolve_bound};
 use super::{CallerEngine, platform_is_supported, read_herdr_mode, read_home};
 use crate::domain::{
-    CanonicalPath, Evidence, PrefixBound, Session, filesystem_path_allowed, merge_candidates,
-    semantic_path_allowed, session_evidence,
+    AgentIdlePolicy, CanonicalPath, Evidence, PrefixBound, Session, filesystem_path_allowed,
+    merge_candidates, semantic_path_allowed, session_evidence,
 };
 use crate::herdr::{
     HerdrMode, LiveCaller, SessionInspection, inspect_session_concurrent, run_bounded,
@@ -35,18 +36,6 @@ pub(crate) fn complete_path_argument(
     let started = Instant::now();
     let (typed, span) = typed_argument(&call)?;
     complete_directory(engine, &typed, span, started)
-}
-
-pub(crate) fn dynamic_completion_enabled(
-    config: Result<Option<Value>, crate::domain::Error>,
-) -> bool {
-    match config {
-        Ok(Some(Value::Record { val, .. })) => matches!(
-            val.get("dynamic_completion"),
-            Some(Value::Bool { val: true, .. })
-        ),
-        _ => false,
-    }
 }
 
 fn typed_argument(call: &DynamicCompletionCall) -> Option<(String, Option<Span>)> {
@@ -78,16 +67,17 @@ fn complete_directory(
         return None;
     }
     let engine_worker = engine.clone();
-    let context = match run_bounded(&halt_herdr, move || {
-        if !dynamic_completion_enabled(engine_worker.plugin_config()) {
+    let (context, policy) = match run_bounded(&halt_herdr, move || {
+        let config = read_command_config(&engine_worker, Span::unknown()).ok()?;
+        if !config.dynamic_completion {
             return None;
         }
         match read_herdr_mode(&engine_worker) {
-            Ok(HerdrMode::Inside(context)) => Some(context),
+            Ok(HerdrMode::Inside(context)) => Some((context, config.idle_agent_policy)),
             _ => None,
         }
     }) {
-        Ok(Some(context)) => context,
+        Ok(Some(ready)) => ready,
         _ => return None,
     };
     if engine.interrupted() {
@@ -104,7 +94,24 @@ fn complete_directory(
     if engine.interrupted() {
         return None;
     }
-    complete_from_ready(engine, typed, span, live, session, halt_herdr, halt_overall)
+    complete_from_ready(
+        engine,
+        typed,
+        span,
+        ReadySession {
+            live,
+            session,
+            policy,
+        },
+        halt_herdr,
+        halt_overall,
+    )
+}
+
+struct ReadySession {
+    live: LiveCaller,
+    session: Session,
+    policy: AgentIdlePolicy,
 }
 
 struct PreparedCompletion {
@@ -113,6 +120,7 @@ struct PreparedCompletion {
     prefix: TypedPrefix,
     bound: Option<PrefixBound>,
     semantic: Vec<(CanonicalPath, Evidence)>,
+    policy: AgentIdlePolicy,
 }
 
 fn prepare_semantic(
@@ -120,6 +128,7 @@ fn prepare_semantic(
     typed: &str,
     live: &LiveCaller,
     session: &Session,
+    policy: AgentIdlePolicy,
 ) -> Option<PreparedCompletion> {
     let caller_cwd = CanonicalPath::directory(engine.current_dir().ok()?).ok()?;
     let home_raw = read_home(engine).ok()?;
@@ -147,6 +156,7 @@ fn prepare_semantic(
         prefix,
         bound,
         semantic,
+        policy,
     })
 }
 
@@ -154,8 +164,7 @@ fn complete_from_ready(
     engine: &impl CallerEngine,
     typed: &str,
     span: Option<Span>,
-    live: LiveCaller,
-    session: Session,
+    ready: ReadySession,
     halt_herdr: impl Fn() -> bool,
     halt_overall: impl Fn() -> bool,
 ) -> Option<Vec<DynamicSuggestion>> {
@@ -165,7 +174,13 @@ fn complete_from_ready(
     let engine_worker = engine.clone();
     let typed_owned = typed.to_string();
     let (prepared, semantic_suggestions) = match run_bounded(&halt_herdr, move || {
-        let prepared = prepare_semantic(&engine_worker, &typed_owned, &live, &session)?;
+        let prepared = prepare_semantic(
+            &engine_worker,
+            &typed_owned,
+            &ready.live,
+            &ready.session,
+            ready.policy,
+        )?;
         let suggestions = suggestions_from(&prepared, &[], span)?;
         Some((prepared, suggestions))
     }) {
@@ -215,7 +230,12 @@ fn suggestions_from(
         aliases.entry(path.clone()).or_default().push(alias.clone());
     }
     let fs_paths = filesystem.iter().map(|(path, _)| path.clone());
-    let candidates = merge_candidates(prepared.semantic.clone(), fs_paths, &prepared.caller_cwd)?;
+    let candidates = merge_candidates(
+        prepared.semantic.clone(),
+        fs_paths,
+        &prepared.caller_cwd,
+        &prepared.policy,
+    )?;
     Some(
         candidates
             .into_iter()
@@ -294,20 +314,42 @@ fn read_direct_children(
 #[cfg(test)]
 mod tests {
     use super::{
-        HERDR_COMPLETION_DEADLINE, complete_directory, complete_from_ready,
-        dynamic_completion_enabled, read_direct_children,
+        HERDR_COMPLETION_DEADLINE, ReadySession, complete_directory, read_direct_children,
     };
     use crate::command::CallerEngine;
-    use crate::domain::{CanonicalPath, Error, PrefixBound};
+    use crate::domain::{AgentIdlePolicy, CanonicalPath, Error, PrefixBound};
     use crate::herdr::test_support::{TempDir, lock_cli, write_executable};
     use crate::herdr::{SessionInspection, inspect_session_concurrent};
-    use nu_protocol::{SuggestionKind, Value, record};
+    use nu_protocol::{Span, SuggestionKind, Value, record};
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
+
+    fn complete_from_ready(
+        engine: &impl CallerEngine,
+        typed: &str,
+        span: Option<Span>,
+        live: crate::herdr::LiveCaller,
+        session: crate::domain::Session,
+        halt_herdr: impl Fn() -> bool,
+        halt_overall: impl Fn() -> bool,
+    ) -> Option<Vec<nu_protocol::DynamicSuggestion>> {
+        super::complete_from_ready(
+            engine,
+            typed,
+            span,
+            ReadySession {
+                live,
+                session,
+                policy: AgentIdlePolicy::default(),
+            },
+            halt_herdr,
+            halt_overall,
+        )
+    }
 
     #[derive(Clone)]
     struct FakeEngine {
@@ -398,6 +440,15 @@ mod tests {
     }
 
     fn snapshot_and_current(root: &str, extra_pane: &str) -> (String, String) {
+        snapshot_and_current_with(root, root, "idle", extra_pane)
+    }
+
+    fn snapshot_and_current_with(
+        root: &str,
+        workspace_root: &str,
+        pane_status: &str,
+        extra_pane: &str,
+    ) -> (String, String) {
         let snapshot = format!(
             r#"{{
               "id": "cli:session:snapshot",
@@ -419,8 +470,8 @@ mod tests {
                     "worktree": {{
                       "repo_key": "k",
                       "repo_name": "n",
-                      "repo_root": "{root}",
-                      "checkout_path": "{root}",
+                      "repo_root": "{workspace_root}",
+                      "checkout_path": "{workspace_root}",
                       "is_linked_worktree": true
                     }}
                   }}],
@@ -449,7 +500,7 @@ mod tests {
                     "workspace_id": "w1",
                     "tab_id": "w1:t1",
                     "focused": false,
-                    "agent_status": "idle",
+                    "agent_status": "{pane_status}",
                     "revision": 2,
                     "agent": "codex",
                     "foreground_cwd": "{root}/src"{extra_pane}
@@ -534,29 +585,6 @@ esac
     }
 
     #[test]
-    fn config_is_strict_and_disabled_by_default() {
-        assert!(!dynamic_completion_enabled(Ok(None)));
-        assert!(!dynamic_completion_enabled(Ok(Some(Value::test_record(
-            record! { "other" => Value::test_bool(true) }
-        )))));
-        assert!(!dynamic_completion_enabled(Ok(Some(Value::test_record(
-            record! { "dynamic_completion" => Value::test_bool(false) }
-        )))));
-        assert!(!dynamic_completion_enabled(Ok(Some(Value::test_record(
-            record! { "dynamic_completion" => Value::test_string("true") }
-        )))));
-        assert!(!dynamic_completion_enabled(Ok(Some(Value::test_bool(
-            true
-        )))));
-        assert!(!dynamic_completion_enabled(Err(
-            Error::invalid_herdr_context("unreadable")
-        )));
-        assert!(dynamic_completion_enabled(Ok(Some(Value::test_record(
-            record! { "dynamic_completion" => Value::test_bool(true) }
-        )))));
-    }
-
-    #[test]
     fn disabled_config_does_not_inspect_herdr() {
         let _cli = lock_cli();
         let root = TempDir::new("disabled-root");
@@ -595,6 +623,56 @@ esac
                 .as_deref()
                 .is_some_and(|text| text.contains("agent idle"))
         }));
+    }
+
+    #[test]
+    fn completion_uses_configured_status_strength_and_falls_back_on_invalid_config() {
+        let _cli = lock_cli();
+        let root = TempDir::new("completion-policy");
+        let src = root.path().join("src");
+        fs::create_dir(&src).unwrap();
+        let root_str = root.path().to_str().unwrap();
+        let src_str = src.to_str().unwrap();
+        let (snapshot, current) = snapshot_and_current_with(root_str, src_str, "blocked", "");
+        let (dir, bin) = install_fake(&snapshot, &current);
+        warmup_herdr(&bin);
+
+        let mut configured = enabled_inside(root_str, &bin);
+        configured.config = Ok(Some(Value::test_record(record! {
+            "dynamic_completion" => Value::test_bool(true),
+            "idle_agent_statuses" => Value::test_list(vec![Value::test_string("blocked")]),
+        })));
+        let suggestions = complete_directory(&configured, "", None, Instant::now()).unwrap();
+        assert!(suggestions.iter().any(|item| {
+            item.value.contains("src")
+                && item
+                    .description
+                    .as_deref()
+                    .is_some_and(|text| text.contains("agent blocked"))
+        }));
+
+        let default = enabled_inside(root_str, &bin);
+        let suggestions = complete_directory(&default, "", None, Instant::now()).unwrap();
+        assert!(suggestions.iter().any(|item| {
+            item.value.contains("src")
+                && item
+                    .description
+                    .as_deref()
+                    .is_some_and(|text| text.contains("workspace"))
+        }));
+
+        fs::write(dir.path().join("record"), "").unwrap();
+        let mut invalid = enabled_inside(root_str, &bin);
+        invalid.config = Ok(Some(Value::test_record(record! {
+            "unknown_key" => Value::test_bool(true),
+        })));
+        assert!(complete_directory(&invalid, "", None, Instant::now()).is_none());
+        assert!(
+            fs::read_to_string(dir.path().join("record"))
+                .unwrap_or_default()
+                .is_empty(),
+            "invalid config must stop before Herdr inspection"
+        );
     }
 
     #[test]
@@ -841,7 +919,7 @@ esac
             panic!("expected ready inspection");
         };
         assert!(
-            complete_from_ready(&engine, "", None, live, session, || false, || false).is_none()
+            complete_from_ready(&engine, "", None, live, session, || false, || false,).is_none()
         );
     }
 
@@ -906,7 +984,9 @@ esac
         else {
             panic!("expected ready inspection");
         };
-        assert!(complete_from_ready(&engine, "", None, live, session, || false, || true).is_none());
+        assert!(
+            complete_from_ready(&engine, "", None, live, session, || false, || true,).is_none()
+        );
     }
 
     #[test]

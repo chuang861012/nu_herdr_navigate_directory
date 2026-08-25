@@ -3,7 +3,8 @@
 use std::time::Instant;
 
 use crate::domain::{
-    Action, Caller, CanonicalPath, Error, Occupant, PaneId, ResolvedPaths, Session, decide,
+    Action, AgentIdlePolicy, Caller, CanonicalPath, Error, Occupant, PaneId, ResolvedPaths,
+    Session, decide,
 };
 use crate::herdr::{
     CommandResult, FocusResult, HerdrMode, InsideContext, ProcessInspection, RunError,
@@ -40,6 +41,7 @@ enum Executed {
 pub(crate) fn orchestrate(
     paths: &ResolvedPaths,
     mode: &HerdrMode,
+    policy: &AgentIdlePolicy,
     interrupted: &dyn Fn() -> bool,
     deadline: Instant,
 ) -> Result<Outcome, RunError> {
@@ -48,13 +50,16 @@ pub(crate) fn orchestrate(
         HerdrMode::Outside => Ok(Outcome::ChangeDirectory {
             path: paths.target.clone(),
         }),
-        HerdrMode::Inside(context) => orchestrate_inside(paths, context, interrupted, deadline),
+        HerdrMode::Inside(context) => {
+            orchestrate_inside(paths, context, policy, interrupted, deadline)
+        }
     }
 }
 
 fn orchestrate_inside(
     paths: &ResolvedPaths,
     context: &InsideContext,
+    policy: &AgentIdlePolicy,
     interrupted: &dyn Fn() -> bool,
     deadline: Instant,
 ) -> Result<Outcome, RunError> {
@@ -63,14 +68,14 @@ fn orchestrate_inside(
 
     let (view, mut recomputed) =
         prepare_view(paths, context, false, &halt, interrupted, deadline).map_err(&map)?;
-    let mut action = decide(&view.caller, &view.session, &paths.target);
+    let mut action = decide(&view.caller, &view.session, &paths.target, policy);
 
     if is_create(&action) && !recomputed {
         check(interrupted, deadline)?;
         let (view, _) =
             prepare_view(paths, context, true, &halt, interrupted, deadline).map_err(&map)?;
         recomputed = true;
-        action = decide(&view.caller, &view.session, &paths.target);
+        action = decide(&view.caller, &view.session, &paths.target, policy);
     }
 
     check(interrupted, deadline)?;
@@ -79,7 +84,7 @@ fn orchestrate_inside(
         Executed::NeedRecompute => {
             let (view, _) =
                 prepare_view(paths, context, true, &halt, interrupted, deadline).map_err(&map)?;
-            let action = decide(&view.caller, &view.session, &paths.target);
+            let action = decide(&view.caller, &view.session, &paths.target, policy);
             check(interrupted, deadline)?;
             match execute_action(context, &action, true, &halt).map_err(&map)? {
                 Executed::Done(outcome) => Ok(outcome),
@@ -249,7 +254,7 @@ pub(crate) fn map_halt(error: RunError, interrupted: &dyn Fn() -> bool) -> RunEr
 #[cfg(test)]
 mod tests {
     use super::{Outcome, TOTAL_DEADLINE, orchestrate};
-    use crate::domain::{CanonicalPath, ErrorKind, ResolvedPaths, resolve_paths};
+    use crate::domain::{AgentIdlePolicy, CanonicalPath, ErrorKind, ResolvedPaths, resolve_paths};
     use crate::herdr::test_support::{TempDir, lock_cli, write_executable};
     use crate::herdr::{HerdrMode, RunError, inside_context};
     use serde_json::{Value, json};
@@ -453,6 +458,22 @@ esac
             self.run_from_with(cwd, target, &|| false, Instant::now() + TOTAL_DEADLINE)
         }
 
+        fn run_from_with_policy(
+            &self,
+            cwd: &Path,
+            target: &str,
+            policy: &AgentIdlePolicy,
+        ) -> Result<Outcome, RunError> {
+            let paths = self.paths_from(cwd, target);
+            orchestrate(
+                &paths,
+                &HerdrMode::Inside(self.context.clone()),
+                policy,
+                &|| false,
+                Instant::now() + TOTAL_DEADLINE,
+            )
+        }
+
         fn run_from_with(
             &self,
             cwd: &Path,
@@ -464,6 +485,7 @@ esac
             orchestrate(
                 &paths,
                 &HerdrMode::Inside(self.context.clone()),
+                &AgentIdlePolicy::default(),
                 interrupted,
                 deadline,
             )
@@ -775,6 +797,7 @@ esac
         let outcome = orchestrate(
             &paths,
             &HerdrMode::Outside,
+            &AgentIdlePolicy::default(),
             &|| false,
             Instant::now() + TOTAL_DEADLINE,
         )
@@ -854,6 +877,61 @@ esac
         assert_silent(world.run_from(&world.repo, "src").unwrap());
         server.join().unwrap();
         assert_eq!(world.count_prefix("pane process-info"), 0);
+    }
+
+    #[test]
+    fn configured_blocked_and_working_agents_are_focused_without_process_info() {
+        for (raw_status, status) in [
+            ("blocked", crate::domain::AgentStatus::Blocked),
+            ("working", crate::domain::AgentStatus::Working),
+        ] {
+            let world = World::new();
+            let repo = world.repo_str();
+            let src = world.src_str();
+            world.write_snapshot1(single_workspace_snapshot(
+                &repo,
+                &[
+                    shell_pane("w1:p1", &repo, &repo, true),
+                    agent_pane("w1:p2", &src, raw_status, false),
+                ],
+            ));
+            let server = serve_focus(&world.socket_path(), vec![FocusReply::Ok]);
+            assert_silent(
+                world
+                    .run_from_with_policy(
+                        &world.repo,
+                        "src",
+                        &AgentIdlePolicy::from_statuses([status]),
+                    )
+                    .unwrap(),
+            );
+            server.join().unwrap();
+            assert_eq!(world.count_prefix("pane process-info"), 0, "{raw_status}");
+        }
+    }
+
+    #[test]
+    fn empty_agent_policy_still_inspects_and_reuses_an_idle_shell() {
+        let world = World::new();
+        let repo = world.repo_str();
+        let src = world.src_str();
+        world.write_snapshot1(single_workspace_snapshot(
+            &repo,
+            &[
+                shell_pane("w1:p1", &repo, &repo, true),
+                agent_pane("w1:p2", &src, "idle", false),
+                shell_pane("w1:p3", &src, &src, false),
+            ],
+        ));
+        let server = serve_focus(&world.socket_path(), vec![FocusReply::Ok]);
+        assert_silent(
+            world
+                .run_from_with_policy(&world.repo, "src", &AgentIdlePolicy::from_statuses([]))
+                .unwrap(),
+        );
+        server.join().unwrap();
+        assert_eq!(world.count_prefix("pane process-info --pane w1:p3"), 1);
+        assert_eq!(world.count_prefix("pane process-info --pane w1:p2"), 0);
     }
 
     #[test]
@@ -1444,6 +1522,7 @@ esac
             orchestrate(
                 &first_paths,
                 &HerdrMode::Inside(first_ctx),
+                &AgentIdlePolicy::default(),
                 &|| false,
                 Instant::now() + TOTAL_DEADLINE,
             )
@@ -1452,6 +1531,7 @@ esac
             orchestrate(
                 &second_paths,
                 &HerdrMode::Inside(second_ctx),
+                &AgentIdlePolicy::default(),
                 &|| false,
                 Instant::now() + TOTAL_DEADLINE,
             )
