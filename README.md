@@ -1,5 +1,9 @@
 # nu_herdr_navigate_directory
 
+> [!NOTE]
+> This is a Nushell plugin that integrates with Herdr. It is not a Herdr
+> plugin.
+
 Herdr-aware directory navigation for Nushell.
 
 ```nu
